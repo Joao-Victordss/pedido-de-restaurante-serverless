@@ -1,0 +1,41 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "LocalStack: Up",
+      "type": "shell",
+      "command": "make up",
+      "problemMatcher": []
+    },
+    {
+      "label": "LocalStack: Logs",
+      "type": "shell",
+      "command": "make logs",
+      "problemMatcher": []
+    },
+    {
+      "label": "LocalStack: Bootstrap",
+      "type": "shell",
+      "command": "make bootstrap",
+      "problemMatcher": []
+    },
+    {
+      "label": "LocalStack: Teardown",
+      "type": "shell",
+      "command": "make teardown",
+      "problemMatcher": []
+    },
+    {
+      "label": "LocalStack: Down",
+      "type": "shell",
+      "command": "make down",
+      "problemMatcher": []
+    },
+    {
+      "label": "LocalStack: Doctor",
+      "type": "shell",
+      "command": "make doctor",
+      "problemMatcher": []
+    }
+  ]
+}

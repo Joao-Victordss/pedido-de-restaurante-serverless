@@ -1,0 +1,23 @@
+version: "3.8"
+
+services:
+  localstack:
+    image: localstack/localstack:latest
+    container_name: localstack
+    env_file:
+      - ./.env   # será copiado de .env.example
+    environment:
+      SERVICES: apigateway,lambda,dynamodb,sqs,s3,sns,iam,logs,cloudwatch
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION}
+      LS_LOG: info
+      DEBUG: ${DEBUG}
+      DOCKER_HOST: unix:///var/run/docker.sock
+    ports:
+      - "${EDGE_PORT:-4566}:4566"
+      - "4510-4559:4510-4559"
+    volumes:
+      - localstack-data:/var/lib/localstack
+      - /var/run/docker.sock:/var/run/docker.sock
+
+volumes:
+  localstack-data:
