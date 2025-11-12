@@ -64,54 +64,8 @@ Remove-Item "simple.zip" -ErrorAction SilentlyContinue
 
 Set-Location "../../.."
 
-Write-Host "🧪 Testando Lambda..." -ForegroundColor Cyan
-Write-Host ""
-
-# Testar
-$payload = @{
-    body = @{
-        cliente = "João Silva"
-        itens = @("Pizza", "Refrigerante")
-        mesa = 5
-    } | ConvertTo-Json -Compress
-} | ConvertTo-Json
-
-[System.IO.File]::WriteAllText("test-payload.json", $payload, [System.Text.UTF8Encoding]::new($false))
-
-Start-Sleep -Seconds 3
-
-aws --endpoint-url=$ENDPOINT `
-    lambda invoke `
-    --function-name $LAMBDA_NAME `
-    --payload fileb://test-payload.json `
-    --region $REGION `
-    response.json
-
-if ($LASTEXITCODE -eq 0) {
-    Write-Host ""
-    Write-Host "📥 Resposta:" -ForegroundColor Green
-    $response = Get-Content response.json -Raw
-    Write-Host $response -ForegroundColor Gray
-    
-    try {
-        $responseObj = $response | ConvertFrom-Json
-        if ($responseObj.errorMessage) {
-            Write-Host ""
-            Write-Host "❌ Erro: $($responseObj.errorMessage)" -ForegroundColor Red
-        } elseif ($responseObj.statusCode -eq 201) {
-            Write-Host ""
-            Write-Host "✅ Pedido criado com sucesso!" -ForegroundColor Green
-            $body = $responseObj.body | ConvertFrom-Json
-            Write-Host "   Pedido ID: $($body.pedidoId)" -ForegroundColor White
-        }
-    } catch {
-        Write-Host "Resposta recebida" -ForegroundColor Gray
-    }
-}
-
-# Limpar
-Remove-Item test-payload.json -ErrorAction SilentlyContinue
-Remove-Item response.json -ErrorAction SilentlyContinue
-
 Write-Host ""
 Write-Host "🎉 Deploy completo!" -ForegroundColor Green
+Write-Host ""
+Write-Host "� Para testar a Lambda:" -ForegroundColor Cyan
+Write-Host "   .\infra\localstack\scripts\test-lambda-criar-pedido.ps1" -ForegroundColor Gray
