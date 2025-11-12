@@ -6,7 +6,7 @@ COMPOSE := docker compose -f infra/docker-compose.yml
 
 up:
 	$(COMPOSE) up -d
-	./scripts/wait-for-localstack.sh localhost $(EDGE_PORT)
+	./infra/localstack/wait-for-localstack.sh localhost $(EDGE_PORT)
 
 down:
 	$(COMPOSE) down -v
@@ -18,10 +18,10 @@ ps:
 	$(COMPOSE) ps
 
 bootstrap:
-	./scripts/bootstrap-local-aws.sh
+	./infra/localstack/bootstrap.sh
 
 teardown:
-	./scripts/teardown-local-aws.sh
+	./infra/localstack/teardown.sh
 
 doctor:
 	@command -v docker >/dev/null || (echo "Instale Docker" && exit 1)
