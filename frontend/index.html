@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sistema de Pedidos - Restaurante</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🍽️ Sistema de Pedidos</h1>
+            <p class="subtitle">Restaurante Serverless</p>
+        </header>
+
+        <!-- Configuração da API -->
+        <section class="config-section">
+            <h2>⚙️ Configuração</h2>
+            <div class="form-group">
+                <label for="apiId">API Gateway ID:</label>
+                <input type="text" id="apiId" placeholder="Digite o API ID (ex: dp2g1h6fv4)">
+                <button onclick="saveApiId()" class="btn btn-primary">Salvar</button>
+                <span id="apiStatus" class="status-indicator"></span>
+            </div>
+            <p class="api-url" id="apiUrl">URL da API: <span>-</span></p>
+        </section>
+
+        <!-- Criar Novo Pedido -->
+        <section class="create-section">
+            <h2>➕ Criar Novo Pedido</h2>
+            <form id="createOrderForm" onsubmit="createOrder(event)">
+                <div class="form-group">
+                    <label for="cliente">Nome do Cliente:</label>
+                    <input type="text" id="cliente" required minlength="3" placeholder="Ex: João Silva">
+                </div>
+                
+                <div class="form-group">
+                    <label for="mesa">Número da Mesa:</label>
+                    <input type="number" id="mesa" required min="1" placeholder="Ex: 10">
+                </div>
+                
+                <div class="form-group">
+                    <label>Itens do Pedido:</label>
+                    <div class="items-container" id="itemsContainer">
+                        <div class="item-input">
+                            <input type="text" class="item-field" placeholder="Ex: Pizza Margherita" required>
+                            <button type="button" onclick="removeItem(this)" class="btn btn-danger btn-sm">✕</button>
+                        </div>
+                    </div>
+                    <button type="button" onclick="addItem()" class="btn btn-secondary btn-sm">+ Adicionar Item</button>
+                </div>
+                
+                <button type="submit" class="btn btn-success btn-lg">Criar Pedido</button>
+            </form>
+            <div id="createResult" class="result"></div>
+        </section>
+
+        <!-- Listar Pedidos -->
+        <section class="list-section">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+                <h2>📋 Pedidos</h2>
+                <button onclick="showSnsInfo()" class="btn btn-secondary btn-sm">
+                    📧 Ver Status SNS
+                </button>
+            </div>
+            
+            <div class="filters">
+                <div class="form-group inline">
+                    <label for="statusFilter">Filtrar por Status:</label>
+                    <select id="statusFilter">
+                        <option value="">Todos</option>
+                        <option value="pendente">Pendente</option>
+                        <option value="processado">Processado</option>
+                        <option value="erro">Erro</option>
+                    </select>
+                </div>
+                
+                <div class="form-group inline">
+                    <label for="limitFilter">Limite:</label>
+                    <select id="limitFilter">
+                        <option value="5">5</option>
+                        <option value="10" selected>10</option>
+                        <option value="20">20</option>
+                        <option value="50">50</option>
+                    </select>
+                </div>
+                
+                <button onclick="listOrders()" class="btn btn-primary">🔄 Atualizar</button>
+                <button onclick="autoRefresh()" class="btn btn-secondary" id="autoRefreshBtn">
+                    <span id="autoRefreshIcon">▶️</span> Auto-refresh
+                </button>
+            </div>
+            
+            <div id="ordersContainer" class="orders-container">
+                <p class="empty-state">Carregue os pedidos para visualizar</p>
+            </div>
+            
+            <div class="pagination" id="pagination" style="display: none;">
+                <button onclick="previousPage()" id="prevBtn" class="btn btn-secondary" disabled>← Anterior</button>
+                <span id="pageInfo">Página 1</span>
+                <button onclick="nextPage()" id="nextBtn" class="btn btn-secondary">Próxima →</button>
+            </div>
+        </section>
+
+        <!-- Modal de Detalhes -->
+        <div id="detailModal" class="modal">
+            <div class="modal-content">
+                <span class="close" onclick="closeModal()">&times;</span>
+                <h2>📄 Detalhes do Pedido</h2>
+                <div id="orderDetails"></div>
+            </div>
+        </div>
+
+        <!-- Modal SNS Info -->
+        <div id="snsModal" class="modal">
+            <div class="modal-content">
+                <span class="close" onclick="closeSnsModal()">&times;</span>
+                <h2>📧 Status do SNS (Notificações)</h2>
+                <div id="snsInfo"></div>
+                
+                <hr style="margin: 2rem 0;">
+                
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+                    <h3>📬 Mensagens Publicadas</h3>
+                    <div>
+                        <button onclick="toggleSnsAutoRefresh()" class="btn btn-secondary btn-sm" id="snsAutoRefreshBtn">
+                            <span id="snsAutoRefreshIcon">▶️</span> Auto-refresh SNS
+                        </button>
+                        <button onclick="loadSnsMessages()" class="btn btn-secondary btn-sm">🔄 Atualizar</button>
+                    </div>
+                </div>
+                <div id="snsMessages"></div>
+            </div>
+        </div>
+    </div>
+
+    <footer>
+        <p>Sistema de Pedidos Serverless | AWS Lambda + API Gateway + LocalStack</p>
+    </footer>
+
+    <script src="script.js"></script>
+</body>
+</html>
