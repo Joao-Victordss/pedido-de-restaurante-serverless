@@ -37,6 +37,10 @@ yarn-error.log*
 *.tmp
 *.temp
 .cache/
+api-id.txt
+response*.json
+response*.txt
+payload*.json
 
 # Build and distribution directories
 dist/
