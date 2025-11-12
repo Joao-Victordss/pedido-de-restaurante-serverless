@@ -41,19 +41,17 @@ Lambda function que processa pedidos consumindo mensagens da fila SQS.
 
 ## Formato do PDF Gerado
 
-O PDF é gerado em formato texto simulado contendo:
-- Cabeçalho com título
+O PDF é gerado usando a biblioteca **FPDF2** (Python puro, sem dependências nativas), criando um documento PDF real e profissional contendo:
+- Cabeçalho com título centralizado
 - ID do pedido
 - Nome do cliente
 - Número da mesa
-- Data/hora
-- Lista de itens
-- Rodapé com status
+- Data/hora formatada
+- Lista numerada de itens
+- Status do processamento
+- Rodapé com mensagem de agradecimento
 
-Em produção, seria um PDF real usando bibliotecas como:
-- `reportlab`
-- `WeasyPrint`
-- `pdfkit`
+O PDF usa fonte Courier para manter o estilo de comprovante tradicional, com formatação adequada para impressão em papel A4/Letter.
 
 ## Estrutura S3
 
@@ -169,12 +167,3 @@ A Lambda faz log de:
 - Tempo de processamento
 - Tamanho dos PDFs gerados
 - Taxa de erro
-
-## Próximos Passos
-
-1. Implementar geração de PDF real com `reportlab`
-2. Adicionar template HTML para PDF
-3. Incluir logo e formatação profissional
-4. Adicionar validação de campos obrigatórios
-5. Implementar retry exponencial
-6. Adicionar circuit breaker

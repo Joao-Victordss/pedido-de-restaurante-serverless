@@ -17,13 +17,39 @@ $REGION = "us-east-1"
 $ENDPOINT = "http://localhost:4566"
 $SQS_QUEUE_URL = "http://localhost:4566/000000000000/pedidos-queue"
 
-# 1. Criar função Lambda
-Write-Host "📝 Criando Lambda..." -ForegroundColor Cyan
+# 1. Instalar dependências e criar pacote
+Write-Host "� Instalando dependências..." -ForegroundColor Cyan
 
-# Criar arquivo ZIP mínimo apenas com o index.py
 Set-Location $LAMBDA_DIR
-if (Test-Path "simple.zip") { Remove-Item "simple.zip" }
-Compress-Archive -Path "index.py" -DestinationPath "simple.zip" -Force
+
+# Criar diretório temporário para build
+if (Test-Path "package") { Remove-Item "package" -Recurse -Force }
+New-Item -ItemType Directory -Path "package" | Out-Null
+
+# Instalar dependências no diretório package
+Write-Host "Instalando fpdf2..." -ForegroundColor Gray
+pip install --target ./package fpdf2 -q
+
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "❌ Erro ao instalar dependências" -ForegroundColor Red
+    exit 1
+}
+
+# Copiar código da Lambda
+Copy-Item "index.py" -Destination "package/"
+
+# Criar ZIP
+Write-Host "Criando arquivo ZIP..." -ForegroundColor Gray
+Set-Location "package"
+if (Test-Path "../lambda.zip") { Remove-Item "../lambda.zip" }
+Compress-Archive -Path * -DestinationPath "../lambda.zip" -Force
+Set-Location ..
+
+Write-Host "✅ Pacote criado: lambda.zip" -ForegroundColor Green
+Write-Host ""
+
+# 2. Criar função Lambda
+Write-Host "📝 Criando Lambda..." -ForegroundColor Cyan
 
 # Verificar se Lambda existe
 $lambdaExists = $false
@@ -46,9 +72,10 @@ $result = aws --endpoint-url=$ENDPOINT `
     --runtime python3.11 `
     --role arn:aws:iam::000000000000:role/lambda-role `
     --handler index.handler `
-    --zip-file fileb://simple.zip `
+    --zip-file fileb://lambda.zip `
     --region $REGION `
     --timeout 60 `
+    --memory-size 512 `
     --environment "Variables={AWS_ACCESS_KEY_ID=test,AWS_SECRET_ACCESS_KEY=test,AWS_DEFAULT_REGION=us-east-1,LOCALSTACK_HOSTNAME=host.docker.internal,DYNAMODB_TABLE=Pedidos,S3_BUCKET=pedidos-comprovantes,SNS_TOPIC_ARN=arn:aws:sns:us-east-1:000000000000:PedidosConcluidos}"
 
 if ($LASTEXITCODE -ne 0) {
@@ -60,7 +87,8 @@ Write-Host "✅ Lambda criada: $LAMBDA_NAME" -ForegroundColor Green
 Write-Host ""
 
 # Limpar
-Remove-Item "simple.zip" -ErrorAction SilentlyContinue
+Remove-Item "package" -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item "lambda.zip" -ErrorAction SilentlyContinue
 
 Set-Location "../../.."
 
@@ -103,71 +131,12 @@ if ($LASTEXITCODE -eq 0) {
 }
 
 Write-Host ""
-Write-Host "🧪 Testando Lambda..." -ForegroundColor Cyan
-Write-Host ""
-
-# Criar payload de teste simulando mensagem SQS
-$sqsEvent = @{
-    Records = @(
-        @{
-            messageId = "test-message-001"
-            receiptHandle = "test-receipt-handle"
-            body = @{
-                pedidoId = "pedido-test-$(Get-Date -Format 'yyyyMMddHHmmss')"
-                cliente = "Maria Santos"
-                itens = @("Hamburguer", "Batata Frita", "Refrigerante")
-                mesa = 10
-                timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
-            } | ConvertTo-Json -Compress
-        }
-    )
-} | ConvertTo-Json -Depth 10
-
-[System.IO.File]::WriteAllText("test-payload.json", $sqsEvent, [System.Text.UTF8Encoding]::new($false))
-
-Start-Sleep -Seconds 3
-
-aws --endpoint-url=$ENDPOINT `
-    lambda invoke `
-    --function-name $LAMBDA_NAME `
-    --payload fileb://test-payload.json `
-    --region $REGION `
-    response.json
-
-if ($LASTEXITCODE -eq 0) {
-    Write-Host ""
-    Write-Host "📥 Resposta:" -ForegroundColor Green
-    $response = Get-Content response.json -Raw
-    Write-Host $response -ForegroundColor Gray
-    
-    try {
-        $responseObj = $response | ConvertFrom-Json
-        if ($responseObj.errorMessage) {
-            Write-Host ""
-            Write-Host "❌ Erro: $($responseObj.errorMessage)" -ForegroundColor Red
-        } elseif ($responseObj.batchItemFailures) {
-            if ($responseObj.batchItemFailures.Count -eq 0) {
-                Write-Host ""
-                Write-Host "✅ Pedido processado com sucesso!" -ForegroundColor Green
-            } else {
-                Write-Host ""
-                Write-Host "⚠️  Falhas no processamento: $($responseObj.batchItemFailures.Count)" -ForegroundColor Yellow
-            }
-        }
-    } catch {
-        Write-Host "Resposta recebida" -ForegroundColor Gray
-    }
-}
-
-# Limpar
-Remove-Item test-payload.json -ErrorAction SilentlyContinue
-Remove-Item response.json -ErrorAction SilentlyContinue
-
-Write-Host ""
 Write-Host "🎉 Deploy completo!" -ForegroundColor Green
 Write-Host ""
+Write-Host "� Para testar a Lambda:" -ForegroundColor Cyan
+Write-Host "   .\infra\localstack\scripts\test-lambda-processar-pedido.ps1" -ForegroundColor Gray
+Write-Host ""
 Write-Host "💡 Para testar o fluxo completo:" -ForegroundColor Cyan
-Write-Host "   1. Envie uma mensagem para a fila SQS (ou use a Lambda criar-pedido)" -ForegroundColor Gray
-Write-Host "   2. Verifique os logs da Lambda" -ForegroundColor Gray
-Write-Host "   3. Confira o PDF no S3" -ForegroundColor Gray
-Write-Host "   4. Valide o status no DynamoDB" -ForegroundColor Gray
+Write-Host "   1. Execute: .\infra\localstack\scripts\test-lambda-criar-pedido.ps1" -ForegroundColor Gray
+Write-Host "   2. Aguarde alguns segundos" -ForegroundColor Gray
+Write-Host "   3. Verifique os logs, S3 e DynamoDB" -ForegroundColor Gray

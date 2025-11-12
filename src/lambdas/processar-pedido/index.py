@@ -3,6 +3,7 @@ import os
 import boto3
 from datetime import datetime
 from io import BytesIO
+from fpdf import FPDF
 
 # Configuração para LocalStack
 LOCALSTACK_HOSTNAME = os.getenv('LOCALSTACK_HOSTNAME', 'localhost')
@@ -37,8 +38,8 @@ sns_client = boto3.client(
 
 def generate_pdf_content(pedido_data):
     """
-    Gera conteúdo do PDF (simulado).
-    Em produção, usaria uma biblioteca como ReportLab ou WeasyPrint.
+    Gera conteúdo do PDF usando FPDF2.
+    Mantém o mesmo layout de texto, mas gera um PDF real.
     """
     pedido_id = pedido_data.get('pedidoId')
     cliente = pedido_data.get('cliente')
@@ -46,37 +47,70 @@ def generate_pdf_content(pedido_data):
     itens = pedido_data.get('itens', [])
     timestamp = pedido_data.get('timestamp')
     
-    # Simulação de PDF - em produção seria um PDF real
-    pdf_content = f"""
-=====================================
-    COMPROVANTE DE PEDIDO
-=====================================
-
-Pedido ID: {pedido_id}
-Cliente: {cliente}
-Mesa: {mesa}
-Data/Hora: {timestamp}
-
--------------------------------------
-           ITENS DO PEDIDO
--------------------------------------
-"""
+    # Criar PDF
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_auto_page_break(auto=True, margin=15)
     
+    # Usar fonte Courier para estilo de comprovante
+    pdf.set_font("Courier", size=10)
+    
+    # Cabeçalho
+    pdf.set_font("Courier", "B", 10)
+    pdf.cell(0, 5, "=" * 70, ln=True, align='C')
+    pdf.ln(2)
+    pdf.set_font("Courier", "B", 16)
+    pdf.cell(0, 8, "COMPROVANTE DE PEDIDO", ln=True, align='C')
+    pdf.ln(2)
+    pdf.set_font("Courier", "B", 10)
+    pdf.cell(0, 5, "=" * 70, ln=True, align='C')
+    pdf.ln(8)
+    
+    # Informações do pedido
+    pdf.set_font("Courier", "", 10)
+    pdf.cell(0, 6, f"Pedido ID: {pedido_id}", ln=True)
+    pdf.cell(0, 6, f"Cliente: {cliente}", ln=True)
+    pdf.cell(0, 6, f"Mesa: {mesa}", ln=True)
+    pdf.cell(0, 6, f"Data/Hora: {timestamp}", ln=True)
+    pdf.ln(8)
+    
+    # Separador
+    pdf.cell(0, 5, "-" * 70, ln=True, align='C')
+    pdf.ln(2)
+    pdf.set_font("Courier", "B", 10)
+    pdf.cell(0, 6, "ITENS DO PEDIDO", ln=True, align='C')
+    pdf.ln(2)
+    pdf.set_font("Courier", "", 10)
+    pdf.cell(0, 5, "-" * 70, ln=True, align='C')
+    pdf.ln(6)
+    
+    # Lista de itens
     for idx, item in enumerate(itens, 1):
-        pdf_content += f"{idx}. {item}\n"
+        pdf.cell(0, 6, f"{idx}. {item}", ln=True)
     
-    pdf_content += """
--------------------------------------
-
-Status: PROCESSADO
-Comprovante gerado automaticamente
-
-=====================================
-    Obrigado pela preferência!
-=====================================
-"""
+    pdf.ln(6)
     
-    return pdf_content.encode('utf-8')
+    # Separador
+    pdf.cell(0, 5, "-" * 70, ln=True, align='C')
+    pdf.ln(6)
+    
+    # Status
+    pdf.set_font("Courier", "B", 10)
+    pdf.cell(0, 6, "Status: PROCESSADO", ln=True)
+    pdf.set_font("Courier", "", 10)
+    pdf.cell(0, 6, "Comprovante gerado automaticamente", ln=True)
+    pdf.ln(8)
+    
+    # Rodapé
+    pdf.set_font("Courier", "B", 10)
+    pdf.cell(0, 5, "=" * 70, ln=True, align='C')
+    pdf.ln(2)
+    pdf.cell(0, 6, "Obrigado pela preferencia!", ln=True, align='C')
+    pdf.ln(2)
+    pdf.cell(0, 5, "=" * 70, ln=True, align='C')
+    
+    # Retornar bytes do PDF
+    return pdf.output()
 
 
 def update_pedido_status(pedido_id, status, s3_key=None):
