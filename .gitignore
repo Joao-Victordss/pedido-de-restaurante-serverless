@@ -1,6 +1,6 @@
 # AWS CLI installation files
+aws/
 awscliv2.zip
-aws/dist/
 
 # Environment variables
 infra/.env
