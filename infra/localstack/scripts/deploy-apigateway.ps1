@@ -79,6 +79,46 @@ $pedidoIdResource = aws --endpoint-url=$ENDPOINT `
 $PEDIDO_ID_RESOURCE_ID = $pedidoIdResource.id
 Write-Host "✅ Resource criado: $PEDIDO_ID_RESOURCE_ID" -ForegroundColor Green
 
+# Configurar método OPTIONS /pedidos (CORS preflight)
+Write-Host "`n🔌 Configurando OPTIONS /pedidos (CORS)..." -ForegroundColor Cyan
+
+aws --endpoint-url=$ENDPOINT `
+    apigateway put-method `
+    --rest-api-id $API_ID `
+    --resource-id $PEDIDOS_RESOURCE_ID `
+    --http-method OPTIONS `
+    --authorization-type NONE `
+    --region $REGION | Out-Null
+
+aws --endpoint-url=$ENDPOINT `
+    apigateway put-integration `
+    --rest-api-id $API_ID `
+    --resource-id $PEDIDOS_RESOURCE_ID `
+    --http-method OPTIONS `
+    --type MOCK `
+    --request-templates '{\"application/json\":\"{\\\"statusCode\\\":200}\"}' `
+    --region $REGION | Out-Null
+
+aws --endpoint-url=$ENDPOINT `
+    apigateway put-method-response `
+    --rest-api-id $API_ID `
+    --resource-id $PEDIDOS_RESOURCE_ID `
+    --http-method OPTIONS `
+    --status-code 200 `
+    --response-parameters '{\"method.response.header.Access-Control-Allow-Headers\":false,\"method.response.header.Access-Control-Allow-Methods\":false,\"method.response.header.Access-Control-Allow-Origin\":false}' `
+    --region $REGION | Out-Null
+
+aws --endpoint-url=$ENDPOINT `
+    apigateway put-integration-response `
+    --rest-api-id $API_ID `
+    --resource-id $PEDIDOS_RESOURCE_ID `
+    --http-method OPTIONS `
+    --status-code 200 `
+    --response-parameters '{\"method.response.header.Access-Control-Allow-Headers\":\"Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token\",\"method.response.header.Access-Control-Allow-Methods\":\"GET,POST,OPTIONS\",\"method.response.header.Access-Control-Allow-Origin\":\"*\"}' `
+    --region $REGION | Out-Null
+
+Write-Host "✅ OPTIONS /pedidos configurado (CORS)" -ForegroundColor Green
+
 # Configurar método POST /pedidos
 Write-Host "`n🔌 Configurando POST /pedidos..." -ForegroundColor Cyan
 
@@ -151,6 +191,46 @@ aws --endpoint-url=$ENDPOINT `
     --region $REGION | Out-Null
 
 Write-Host "✅ GET /pedidos/{id} configurado" -ForegroundColor Green
+
+# Configurar método OPTIONS /pedidos/{id} (CORS preflight)
+Write-Host "`n🔌 Configurando OPTIONS /pedidos/{id} (CORS)..." -ForegroundColor Cyan
+
+aws --endpoint-url=$ENDPOINT `
+    apigateway put-method `
+    --rest-api-id $API_ID `
+    --resource-id $PEDIDO_ID_RESOURCE_ID `
+    --http-method OPTIONS `
+    --authorization-type NONE `
+    --region $REGION | Out-Null
+
+aws --endpoint-url=$ENDPOINT `
+    apigateway put-integration `
+    --rest-api-id $API_ID `
+    --resource-id $PEDIDO_ID_RESOURCE_ID `
+    --http-method OPTIONS `
+    --type MOCK `
+    --request-templates '{\"application/json\":\"{\\\"statusCode\\\":200}\"}' `
+    --region $REGION | Out-Null
+
+aws --endpoint-url=$ENDPOINT `
+    apigateway put-method-response `
+    --rest-api-id $API_ID `
+    --resource-id $PEDIDO_ID_RESOURCE_ID `
+    --http-method OPTIONS `
+    --status-code 200 `
+    --response-parameters '{\"method.response.header.Access-Control-Allow-Headers\":false,\"method.response.header.Access-Control-Allow-Methods\":false,\"method.response.header.Access-Control-Allow-Origin\":false}' `
+    --region $REGION | Out-Null
+
+aws --endpoint-url=$ENDPOINT `
+    apigateway put-integration-response `
+    --rest-api-id $API_ID `
+    --resource-id $PEDIDO_ID_RESOURCE_ID `
+    --http-method OPTIONS `
+    --status-code 200 `
+    --response-parameters '{\"method.response.header.Access-Control-Allow-Headers\":\"Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token\",\"method.response.header.Access-Control-Allow-Methods\":\"GET,OPTIONS\",\"method.response.header.Access-Control-Allow-Origin\":\"*\"}' `
+    --region $REGION | Out-Null
+
+Write-Host "✅ OPTIONS /pedidos/{id} configurado (CORS)" -ForegroundColor Green
 
 # Fazer deploy
 Write-Host "`n🚢 Fazendo deploy para stage 'prod'..." -ForegroundColor Cyan
