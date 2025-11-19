@@ -38,8 +38,8 @@ sns_client = boto3.client(
 
 def generate_pdf_content(pedido_data):
     """
-    Gera conteúdo do PDF usando FPDF2.
-    Mantém o mesmo layout de texto, mas gera um PDF real.
+    Gera PDF formatado para impressora térmica 80mm.
+    Tamanho: 80mm x 210mm (formato de cupom fiscal).
     """
     pedido_id = pedido_data.get('pedidoId')
     cliente = pedido_data.get('cliente')
@@ -47,67 +47,203 @@ def generate_pdf_content(pedido_data):
     itens = pedido_data.get('itens', [])
     timestamp = pedido_data.get('timestamp')
     
-    # Criar PDF
-    pdf = FPDF()
+    # Criar PDF com tamanho customizado (80mm x 210mm)
+    # 80mm = 80/25.4 = 3.15 polegadas = 226.77 pontos
+    # 210mm = 210/25.4 = 8.27 polegadas = 595.28 pontos
+    pdf = FPDF(unit='mm', format=(80, 210))
     pdf.add_page()
-    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.set_auto_page_break(auto=False)
     
-    # Usar fonte Courier para estilo de comprovante
-    pdf.set_font("Courier", size=10)
+    # Margens reduzidas para aproveitar a largura
+    pdf.set_left_margin(3)
+    pdf.set_right_margin(3)
     
-    # Cabeçalho
-    pdf.set_font("Courier", "B", 10)
-    pdf.cell(0, 5, "=" * 70, ln=True, align='C')
-    pdf.ln(2)
-    pdf.set_font("Courier", "B", 16)
-    pdf.cell(0, 8, "COMPROVANTE DE PEDIDO", ln=True, align='C')
-    pdf.ln(2)
-    pdf.set_font("Courier", "B", 10)
-    pdf.cell(0, 5, "=" * 70, ln=True, align='C')
-    pdf.ln(8)
+    y_position = 5  # Posição vertical inicial
     
-    # Informações do pedido
-    pdf.set_font("Courier", "", 10)
-    pdf.cell(0, 6, f"Pedido ID: {pedido_id}", ln=True)
-    pdf.cell(0, 6, f"Cliente: {cliente}", ln=True)
-    pdf.cell(0, 6, f"Mesa: {mesa}", ln=True)
-    pdf.cell(0, 6, f"Data/Hora: {timestamp}", ln=True)
-    pdf.ln(8)
+    # =======================
+    # LOGO (se existir)
+    # =======================
+    # Verificar se existe logo no mesmo diretório da Lambda
+    logo_path = os.path.join(os.path.dirname(__file__), 'logo.png')
+    if os.path.exists(logo_path):
+        try:
+            # Adicionar logo centralizada (60mm de largura - quase toda a largura)
+            logo_width = 60
+            logo_x = (80 - logo_width) / 2  # Centralizar
+            pdf.image(logo_path, x=logo_x, y=y_position, w=logo_width)
+            y_position += 30  # Espaço reduzido após logo
+        except Exception as e:
+            print(f"Aviso: Não foi possível adicionar logo: {e}")
+            # Continuar sem logo
     
-    # Separador
-    pdf.cell(0, 5, "-" * 70, ln=True, align='C')
-    pdf.ln(2)
-    pdf.set_font("Courier", "B", 10)
-    pdf.cell(0, 6, "ITENS DO PEDIDO", ln=True, align='C')
-    pdf.ln(2)
-    pdf.set_font("Courier", "", 10)
-    pdf.cell(0, 5, "-" * 70, ln=True, align='C')
-    pdf.ln(6)
+    # =======================
+    # CABEÇALHO
+    # =======================
+    pdf.set_y(y_position)
+    pdf.set_font("Helvetica", "B", 16)
+    pdf.cell(74, 7, "PIZZARIA DO FABIN", ln=True, align='C')
+    y_position += 7
     
-    # Lista de itens
+    pdf.set_y(y_position)
+    pdf.set_font("Helvetica", "", 8)
+    pdf.cell(74, 4, "Sistema de Pedidos", ln=True, align='C')
+    y_position += 5
+    
+    # Linha separadora
+    pdf.set_y(y_position)
+    pdf.set_font("Helvetica", "", 8)
+    pdf.cell(74, 3, "=" * 42, ln=True, align='C')
+    y_position += 4
+    
+    # =======================
+    # TÍTULO
+    # =======================
+    pdf.set_y(y_position)
+    pdf.set_font("Helvetica", "B", 12)
+    pdf.cell(74, 5, "COMPROVANTE DE PEDIDO", ln=True, align='C')
+    y_position += 6
+    
+    # Linha separadora
+    pdf.set_y(y_position)
+    pdf.set_font("Helvetica", "", 8)
+    pdf.cell(74, 3, "=" * 42, ln=True, align='C')
+    y_position += 5
+    
+    # =======================
+    # INFORMAÇÕES DO PEDIDO
+    # =======================
+    pdf.set_y(y_position)
+    pdf.set_font("Helvetica", "B", 9)
+    pdf.cell(74, 4, f"Pedido: {pedido_id}", ln=True, align='L')
+    y_position += 5
+    
+    pdf.set_y(y_position)
+    pdf.set_font("Helvetica", "", 9)
+    pdf.cell(74, 4, f"Cliente: {cliente}", ln=True, align='L')
+    y_position += 5
+    
+    pdf.set_y(y_position)
+    pdf.cell(74, 4, f"Mesa: {mesa}", ln=True, align='L')
+    y_position += 5
+    
+    # Formatar data/hora de forma mais legível
+    try:
+        dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+        data_formatada = dt.strftime('%d/%m/%Y %H:%M:%S')
+    except:
+        data_formatada = timestamp
+    
+    pdf.set_y(y_position)
+    pdf.cell(74, 4, f"Data: {data_formatada}", ln=True, align='L')
+    y_position += 6
+    
+    # Linha separadora
+    pdf.set_y(y_position)
+    pdf.set_font("Helvetica", "", 8)
+    pdf.cell(74, 3, "-" * 42, ln=True, align='C')
+    y_position += 4
+    
+    # =======================
+    # TÍTULO DOS ITENS
+    # =======================
+    pdf.set_y(y_position)
+    pdf.set_font("Helvetica", "B", 10)
+    pdf.cell(74, 5, "ITENS DO PEDIDO", ln=True, align='C')
+    y_position += 5
+    
+    # Linha separadora
+    pdf.set_y(y_position)
+    pdf.set_font("Helvetica", "", 8)
+    pdf.cell(74, 3, "-" * 42, ln=True, align='C')
+    y_position += 4
+    
+    # =======================
+    # LISTA DE ITENS
+    # =======================
+    pdf.set_font("Helvetica", "", 9)
     for idx, item in enumerate(itens, 1):
-        pdf.cell(0, 6, f"{idx}. {item}", ln=True)
+        # Quebrar item em múltiplas linhas se necessário (máx 32 caracteres por linha)
+        max_width = 32
+        item_text = f"{idx}. {item}"
+        
+        if len(item_text) <= max_width:
+            pdf.set_y(y_position)
+            pdf.cell(74, 4, item_text, ln=True, align='L')
+            y_position += 4
+        else:
+            # Quebrar em múltiplas linhas
+            words = item_text.split()
+            lines = []
+            current_line = ""
+            
+            for word in words:
+                if len(current_line) + len(word) + 1 <= max_width:
+                    current_line += (word + " ")
+                else:
+                    if current_line:
+                        lines.append(current_line.strip())
+                    current_line = word + " "
+            
+            if current_line:
+                lines.append(current_line.strip())
+            
+            # Imprimir linhas
+            for line in lines:
+                pdf.set_y(y_position)
+                pdf.cell(74, 4, line, ln=True, align='L')
+                y_position += 4
     
-    pdf.ln(6)
+    y_position += 2
     
-    # Separador
-    pdf.cell(0, 5, "-" * 70, ln=True, align='C')
-    pdf.ln(6)
+    # =======================
+    # TOTAL DE ITENS
+    # =======================
+    pdf.set_y(y_position)
+    pdf.set_font("Helvetica", "B", 9)
+    pdf.cell(74, 4, f"Total de itens: {len(itens)}", ln=True, align='L')
+    y_position += 6
     
-    # Status
-    pdf.set_font("Courier", "B", 10)
-    pdf.cell(0, 6, "Status: PROCESSADO", ln=True)
-    pdf.set_font("Courier", "", 10)
-    pdf.cell(0, 6, "Comprovante gerado automaticamente", ln=True)
-    pdf.ln(8)
+    # Linha separadora
+    pdf.set_y(y_position)
+    pdf.set_font("Helvetica", "", 8)
+    pdf.cell(74, 3, "-" * 42, ln=True, align='C')
+    y_position += 4
     
-    # Rodapé
-    pdf.set_font("Courier", "B", 10)
-    pdf.cell(0, 5, "=" * 70, ln=True, align='C')
-    pdf.ln(2)
-    pdf.cell(0, 6, "Obrigado pela preferencia!", ln=True, align='C')
-    pdf.ln(2)
-    pdf.cell(0, 5, "=" * 70, ln=True, align='C')
+    # =======================
+    # STATUS
+    # =======================
+    pdf.set_y(y_position)
+    pdf.set_font("Helvetica", "B", 10)
+    pdf.cell(74, 5, "STATUS: PROCESSADO", ln=True, align='C')
+    y_position += 6
+    
+    pdf.set_y(y_position)
+    pdf.set_font("Helvetica", "", 8)
+    pdf.cell(74, 3, "Pedido processado com sucesso", ln=True, align='C')
+    y_position += 5
+    
+    # Linha separadora
+    pdf.set_y(y_position)
+    pdf.cell(74, 3, "=" * 42, ln=True, align='C')
+    y_position += 4
+    
+    # =======================
+    # RODAPÉ
+    # =======================
+    pdf.set_y(y_position)
+    pdf.set_font("Helvetica", "B", 9)
+    pdf.cell(74, 5, "Obrigado pela preferencia!", ln=True, align='C')
+    y_position += 5
+    
+    pdf.set_y(y_position)
+    pdf.set_font("Helvetica", "", 7)
+    pdf.cell(74, 3, "Comprovante gerado automaticamente", ln=True, align='C')
+    y_position += 4
+    
+    # Linha separadora final
+    pdf.set_y(y_position)
+    pdf.set_font("Helvetica", "", 8)
+    pdf.cell(74, 3, "=" * 42, ln=True, align='C')
     
     # Retornar bytes do PDF
     return pdf.output()
