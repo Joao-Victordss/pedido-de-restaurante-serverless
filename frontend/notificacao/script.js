@@ -4,26 +4,13 @@ const API_BASE_URL = 'http://localhost:8080/api';
 let currentPage = 1;
 let lastKey = null;
 let pageHistory = [];
-let snsAutoRefreshInterval = null;
-let lastSnsMessageCount = 0;
-let queueAutoRefreshInterval = null;
-let lastQueueMessageCount = 0;
-let queuePollingInterval = null;
-
-// Carregar IDs de mensagens conhecidas do localStorage para persistir entre reloads
-let knownMessageIds = new Set(
-    JSON.parse(localStorage.getItem('knownMessageIds') || '[]')
-);
-
-// Cache para otimização
-let ordersCache = {
-    pendente: { data: null, timestamp: 0 },
-    processado: { data: null, timestamp: 0 }
-};
-const CACHE_DURATION = 10000; // 10 segundos (aumentado para reduzir carga)
-
-// Flag para evitar requisições simultâneas
-let isLoadingOrders = false;
+let autoRefreshInterval = null;
+let snsAutoRefreshInterval = null;  // Novo: auto-refresh para SNS
+let lastSnsMessageCount = 0;  // Contador para detectar novas mensagens
+let queueAutoRefreshInterval = null;  // Novo: auto-refresh para fila SQS
+let lastQueueMessageCount = 0;  // Contador para detectar novas mensagens na fila
+let queuePollingInterval = null;  // Polling em background para notificações toast
+let knownMessageIds = new Set();  // IDs de mensagens já mostradas
 
 // Inicializar ao carregar
 window.addEventListener('DOMContentLoaded', () => {
@@ -33,50 +20,16 @@ window.addEventListener('DOMContentLoaded', () => {
         configSection.style.display = 'none';
     }
     
-    // Atualizar URL exibida se existir
-    const apiUrlElement = document.getElementById('apiUrl');
-    if (apiUrlElement) {
-        apiUrlElement.innerHTML = `URL da API: <span>${API_BASE_URL}</span>`;
-    }
+    // Atualizar URL exibida
+    document.getElementById('apiUrl').innerHTML = `URL da API: <span>${API_BASE_URL}</span>`;
     document.getElementById('apiStatus').className = 'status-indicator success';
     
-    // Carregar pedidos automaticamente com delay
-    setTimeout(() => listOrders('pendente'), 800);
+    // Carregar pedidos automaticamente
+    setTimeout(() => listOrders(), 500);
     
-    // Iniciar polling de notificações em background (menos frequente)
-    setTimeout(() => startQueuePolling(), 2000);
+    // Iniciar polling de notificações em background
+    startQueuePolling();
 });
-
-// Navegação entre views
-function showView(viewName, event) {
-    // Remover active de todos os botões
-    document.querySelectorAll('.nav-item').forEach(btn => {
-        btn.classList.remove('active');
-    });
-    
-    // Adicionar active ao botão clicado
-    if (event) {
-        event.currentTarget.classList.add('active');
-    }
-    
-    // Esconder todas as views
-    document.querySelectorAll('.view').forEach(view => {
-        view.style.display = 'none';
-    });
-    
-    // Mostrar a view selecionada
-    const selectedView = document.getElementById(`view-${viewName}`);
-    if (selectedView) {
-        selectedView.style.display = 'block';
-    }
-    
-    // Carregar dados específicos da view
-    if (viewName === 'pedidos') {
-        listOrders('pendente');
-    } else if (viewName === 'concluidos') {
-        listOrders('processado');
-    }
-}
 
 function getApiUrl() {
     return API_BASE_URL;
@@ -149,11 +102,8 @@ async function createOrder(event) {
                 </div>
             `;
             
-            // Atualizar lista de pedidos e mudar para a view de pedidos
-            setTimeout(() => {
-                showView('pedidos');
-                listOrders('pendente');
-            }, 1000);
+            // Atualizar lista de pedidos
+            setTimeout(() => listOrders(), 1000);
         } else {
             showError('createResult', `❌ Erro: ${data.error || 'Falha ao criar pedido'}`);
         }
@@ -163,91 +113,57 @@ async function createOrder(event) {
     }
 }
 
-// Listar pedidos com cache
-async function listOrders(statusFilter = null, forceRefresh = false) {
-    // Evitar múltiplas requisições simultâneas
-    if (isLoadingOrders && !forceRefresh) {
-        return; // Silenciosamente ignorar se já está carregando
-    }
-    
+// Listar pedidos
+async function listOrders(resetPagination = true) {
     try {
         const baseUrl = getApiUrl();
-        const statusFilterElement = document.getElementById('statusFilter');
-        const limitFilterElement = document.getElementById('limitFilter');
+        const status = document.getElementById('statusFilter').value;
+        const limit = document.getElementById('limitFilter').value;
         
-        // Determinar qual container usar
-        const container = statusFilter === 'processado' ? 'completedOrdersContainer' : 'ordersContainer';
-        
-        // Usar o filtro passado como parâmetro ou o valor do select
-        const status = statusFilter || (statusFilterElement ? statusFilterElement.value : '');
-        const limit = limitFilterElement ? limitFilterElement.value : '10';
-        
-        // Verificar cache (apenas para views de status específico)
-        if (status && !forceRefresh && ordersCache[status]) {
-            const now = Date.now();
-            const cacheAge = now - ordersCache[status].timestamp;
-            
-            if (cacheAge < CACHE_DURATION && ordersCache[status].data) {
-                console.log(`📦 Usando cache para status: ${status} (${cacheAge}ms)`);
-                displayOrders(ordersCache[status].data, container);
-                return;
-            }
+        if (resetPagination) {
+            currentPage = 1;
+            lastKey = null;
+            pageHistory = [];
         }
-        
-        isLoadingOrders = true;
         
         let url = `${baseUrl}/pedidos?limit=${limit}`;
         if (status) url += `&status=${status}`;
+        if (lastKey) url += `&lastKey=${lastKey}`;
         
-        showLoading(container, 'Carregando pedidos...');
+        showLoading('ordersContainer', 'Carregando pedidos...');
         
         const response = await fetch(url);
         const data = await response.json();
         
         if (response.ok) {
-            const orders = data.pedidos || [];
+            displayOrders(data.pedidos || []);
             
-            // Atualizar cache
-            if (status) {
-                ordersCache[status] = {
-                    data: orders,
-                    timestamp: Date.now()
-                };
+            // Atualizar paginação
+            if (data.lastKey) {
+                document.getElementById('pagination').style.display = 'flex';
+                document.getElementById('nextBtn').disabled = false;
+            } else {
+                document.getElementById('nextBtn').disabled = true;
             }
             
-            displayOrders(orders, container);
+            document.getElementById('prevBtn').disabled = currentPage === 1;
+            document.getElementById('pageInfo').textContent = `Página ${currentPage}`;
             
-            // Atualizar paginação apenas na view de pedidos pendentes
-            if (container === 'ordersContainer') {
-                const paginationElement = document.getElementById('pagination');
-                if (paginationElement) {
-                    if (data.lastKey) {
-                        paginationElement.style.display = 'flex';
-                        document.getElementById('nextBtn').disabled = false;
-                    } else {
-                        document.getElementById('nextBtn').disabled = true;
-                    }
-                    
-                    document.getElementById('prevBtn').disabled = currentPage === 1;
-                    document.getElementById('pageInfo').textContent = `Página ${currentPage}`;
-                }
+            // Armazenar lastKey para próxima página
+            if (data.lastKey && !pageHistory.includes(data.lastKey)) {
+                pageHistory.push(data.lastKey);
             }
         } else {
-            showError(container, `Erro ao carregar pedidos: ${data.error || 'Erro desconhecido'}`);
+            showError('ordersContainer', `Erro ao carregar pedidos: ${data.error || 'Erro desconhecido'}`);
         }
     } catch (error) {
         console.error('Erro ao listar pedidos:', error);
-        const container = statusFilter === 'processado' ? 'completedOrdersContainer' : 'ordersContainer';
-        showError(container, `Erro de conexão: ${error.message}`);
-    } finally {
-        isLoadingOrders = false;
+        showError('ordersContainer', `Erro de conexão: ${error.message}`);
     }
 }
 
-function displayOrders(orders, containerId = 'ordersContainer') {
-    const container = document.getElementById(containerId);
-    
-    if (!container) return;
+function displayOrders(orders) {
+    const container = document.getElementById('ordersContainer');
     
     if (orders.length === 0) {
         container.innerHTML = '<p class="empty-state">Nenhum pedido encontrado</p>';
@@ -294,7 +210,25 @@ function previousPage() {
     }
 }
 
-// Auto-refresh otimizado
+// Auto-refresh
+function autoRefresh() {
+    const btn = document.getElementById('autoRefreshBtn');
+    const icon = document.getElementById('autoRefreshIcon');
+    
+    if (autoRefreshInterval) {
+        clearInterval(autoRefreshInterval);
+        autoRefreshInterval = null;
+        icon.textContent = '▶️';
+        btn.style.background = '';
+    } else {
+        autoRefreshInterval = setInterval(() => {
+            listOrders(false);
+        }, 5000);
+        icon.textContent = '⏸️';
+        btn.style.background = 'var(--primary)';
+    }
+}
+
 // Detalhes do pedido
 async function showOrderDetails(orderId) {
     try {
@@ -307,106 +241,53 @@ async function showOrderDetails(orderId) {
             const modal = document.getElementById('detailModal');
             const detailsDiv = document.getElementById('orderDetails');
             
-            // Status badge config
-            const statusConfig = {
-                pendente: { icon: '⏳', label: 'Pendente', class: 'status-pendente' },
-                preparando: { icon: '👨‍🍳', label: 'Preparando', class: 'status-preparando' },
-                concluido: { icon: '✅', label: 'Concluído', class: 'status-concluido' },
-                cancelado: { icon: '❌', label: 'Cancelado', class: 'status-cancelado' }
-            };
-            
-            const status = statusConfig[order.status] || { icon: '📦', label: order.status, class: 'status-pendente' };
-            
             detailsDiv.innerHTML = `
-                <!-- Header Card com Status -->
-                <div class="detail-header-card">
-                    <div class="detail-id-section">
-                        <span class="detail-label">ID do Pedido</span>
-                        <span class="detail-id">#${order.id.substring(0, 8)}</span>
-                    </div>
-                    <div class="detail-status-badge ${status.class}">
-                        <span class="status-icon">${status.icon}</span>
-                        <span class="status-text">${status.label}</span>
-                    </div>
+                <div class="detail-row">
+                    <strong>ID do Pedido:</strong>
+                    ${order.id}
                 </div>
-
-                <!-- Informações do Cliente -->
-                <div class="detail-section">
-                    <h3 class="section-title">👤 Informações do Cliente</h3>
-                    <div class="detail-grid">
-                        <div class="detail-item">
-                            <span class="detail-icon">👨‍💼</span>
-                            <div class="detail-content">
-                                <span class="detail-label">Cliente</span>
-                                <span class="detail-value">${order.cliente || 'Não informado'}</span>
-                            </div>
-                        </div>
-                        <div class="detail-item">
-                            <span class="detail-icon">🪑</span>
-                            <div class="detail-content">
-                                <span class="detail-label">Mesa</span>
-                                <span class="detail-value">${order.mesa || 'Não informada'}</span>
-                            </div>
-                        </div>
-                    </div>
+                
+                <div class="detail-row">
+                    <strong>Status:</strong>
+                    <span class="order-status status-${order.status}">${order.status.toUpperCase()}</span>
                 </div>
-
-                <!-- Itens do Pedido -->
-                <div class="detail-section">
-                    <h3 class="section-title">🍕 Itens do Pedido</h3>
-                    <div class="detail-items-list">
-                        ${order.itens && order.itens.length > 0 
-                            ? order.itens.map((item, index) => `
-                                <div class="detail-item-card">
-                                    <span class="item-number">${index + 1}</span>
-                                    <span class="item-name">🍴 ${item}</span>
-                                </div>
-                            `).join('')
-                            : '<div class="empty-state">📭 Nenhum item no pedido</div>'
-                        }
-                    </div>
+                
+                <div class="detail-row">
+                    <strong>Cliente:</strong>
+                    ${order.cliente || '-'}
                 </div>
-
-                <!-- Informações Temporais -->
-                <div class="detail-section">
-                    <h3 class="section-title">⏰ Informações de Data</h3>
-                    <div class="detail-timeline">
-                        <div class="timeline-item">
-                            <span class="timeline-icon">📅</span>
-                            <div class="timeline-content">
-                                <span class="timeline-label">Criado em</span>
-                                <span class="timeline-value">${formatDate(order.timestamp)}</span>
-                            </div>
-                        </div>
-                        ${order.updated_at ? `
-                            <div class="timeline-item">
-                                <span class="timeline-icon">🔄</span>
-                                <div class="timeline-content">
-                                    <span class="timeline-label">Última atualização</span>
-                                    <span class="timeline-value">${formatDate(order.updated_at)}</span>
-                                </div>
-                            </div>
-                        ` : ''}
-                    </div>
+                
+                <div class="detail-row">
+                    <strong>Mesa:</strong>
+                    ${order.mesa || '-'}
                 </div>
-
-                <!-- Comprovante -->
+                
+                <div class="detail-row">
+                    <strong>Data de Criação:</strong>
+                    ${formatDate(order.timestamp)}
+                </div>
+                
+                ${order.updated_at ? `
+                    <div class="detail-row">
+                        <strong>Última Atualização:</strong>
+                        ${formatDate(order.updated_at)}
+                    </div>
+                ` : ''}
+                
+                <div class="detail-row">
+                    <strong>Itens do Pedido:</strong>
+                    <ul class="detail-items">
+                        ${order.itens ? order.itens.map(item => `<li>🍴 ${item}</li>`).join('') : '<li>Nenhum item</li>'}
+                    </ul>
+                </div>
+                
                 ${order.comprovante_url ? `
-                    <div class="detail-section">
-                        <h3 class="section-title">📄 Comprovante</h3>
-                        <div class="comprovante-card">
-                            <div class="comprovante-info">
-                                <span class="comprovante-icon">📋</span>
-                                <div class="comprovante-details">
-                                    <span class="comprovante-label">Documento disponível</span>
-                                    <span class="comprovante-name">${order.comprovante_url.split('/').pop()}</span>
-                                </div>
-                            </div>
-                            <button onclick="downloadComprovante('${order.id}')" class="btn-download">
-                                <span>📥</span>
-                                <span>Baixar</span>
-                            </button>
-                        </div>
+                    <div class="detail-row">
+                        <strong>Comprovante:</strong>
+                        <p>📄 ${order.comprovante_url}</p>
+                        <button onclick="downloadComprovante('${order.id}')" class="btn btn-primary btn-sm">
+                            📥 Baixar Comprovante
+                        </button>
                     </div>
                 ` : ''}
             `;
@@ -472,7 +353,7 @@ function showSuccess(elementId, message) {
 
 function showError(elementId, message) {
     const element = document.getElementById(elementId);
-    if (elementId === 'ordersContainer' || elementId === 'completedOrdersContainer') {
+    if (elementId === 'ordersContainer') {
         element.innerHTML = `<p class="empty-state" style="color: var(--danger);">${message}</p>`;
     } else {
         element.className = 'result error';
@@ -713,10 +594,10 @@ function toggleSnsAutoRefresh() {
         btn.classList.remove('active');
         icon.textContent = '▶️';
     } else {
-        // Iniciar auto-refresh a cada 8 segundos (otimizado para performance)
+        // Iniciar auto-refresh a cada 3 segundos
         snsAutoRefreshInterval = setInterval(() => {
             loadSnsMessages();
-        }, 8000);
+        }, 3000);
         btn.classList.add('active');
         icon.textContent = '⏸️';
         
@@ -743,17 +624,8 @@ function closeNotificationsModal() {
         const icon = document.getElementById('queueAutoRefreshIcon');
         if (btn && icon) {
             btn.classList.remove('active');
-            icon.textContent = '▶';
+            icon.textContent = '▶️';
         }
-    }
-}
-
-// Função helper: Limpar cache de notificações conhecidas
-function clearNotificationsCache() {
-    if (confirm('🗑️ Limpar histórico de notificações? Você verá todas as notificações novamente.')) {
-        knownMessageIds.clear();
-        localStorage.removeItem('knownMessageIds');
-        alert('✅ Cache de notificações limpo com sucesso!');
     }
 }
 
@@ -894,44 +766,34 @@ function toggleQueueAutoRefresh() {
         clearInterval(queueAutoRefreshInterval);
         queueAutoRefreshInterval = null;
         btn.classList.remove('active');
-        icon.textContent = '▶';
+        icon.textContent = '▶️';
     } else {
-        // Iniciar auto-refresh a cada 8 segundos (otimizado para performance)
+        // Iniciar auto-refresh a cada 3 segundos
         queueAutoRefreshInterval = setInterval(() => {
             loadQueueMessages();
-        }, 8000);
+        }, 3000);
         btn.classList.add('active');
-        icon.textContent = '⏸';
+        icon.textContent = '⏸️';
         
         // Carregar imediatamente
         loadQueueMessages();
     }
 }
 
-// Polling em background para notificações toast (otimizado)
+// Polling em background para notificações toast
 function startQueuePolling() {
-    // Poll a cada 15 segundos (otimizado para reduzir carga)
+    // Poll a cada 5 segundos
     queuePollingInterval = setInterval(async () => {
         try {
             const baseUrl = getApiUrl().replace('/api', '');
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 5000); // Timeout de 5s (aumentado)
-            
-            const response = await fetch(`${baseUrl}/queue/messages`, {
-                signal: controller.signal
-            });
-            clearTimeout(timeoutId);
-            
+            const response = await fetch(`${baseUrl}/queue/messages`);
             const data = await response.json();
             
             if (data.messages && data.messages.length > 0) {
-                const newMessages = [];
-                
                 // Verificar se há mensagens novas
                 data.messages.forEach(msg => {
                     if (!knownMessageIds.has(msg.messageId)) {
                         knownMessageIds.add(msg.messageId);
-                        newMessages.push(msg);
                         
                         // Mostrar toast apenas se tiver dados do pedido
                         if (msg.data && msg.data.pedidoId) {
@@ -943,59 +805,15 @@ function startQueuePolling() {
                                 duration: 8000,
                                 onClick: () => showOrderDetails(msg.data.pedidoId)
                             });
-                            
-                            // Invalidar cache de pedidos
-                            ordersCache.pendente.timestamp = 0;
-                            ordersCache.processado.timestamp = 0;
                         }
                     }
                 });
-                
-                // Salvar IDs conhecidos no localStorage
-                const idsArray = Array.from(knownMessageIds);
-                // Manter apenas os últimos 100 IDs
-                const limitedIds = idsArray.slice(-100);
-                knownMessageIds = new Set(limitedIds);
-                localStorage.setItem('knownMessageIds', JSON.stringify(limitedIds));
-                
-                // Deletar mensagens processadas da fila (apenas as novas)
-                if (newMessages.length > 0 && data.queueUrl) {
-                    deleteProcessedMessages(data.queueUrl, newMessages);
-                }
             }
         } catch (error) {
             // Silencioso - não mostrar erro do polling em background
-            if (error.name !== 'AbortError') {
-                console.debug('Queue polling:', error.message);
-            }
+            console.debug('Queue polling:', error.message);
         }
-    }, 15000);
-}
-
-// Função auxiliar para deletar mensagens processadas da fila
-async function deleteProcessedMessages(queueUrl, messages) {
-    try {
-        const baseUrl = getApiUrl().replace('/api', '');
-        
-        // Enviar request para deletar as mensagens
-        await fetch(`${baseUrl}/queue/delete`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                queueUrl: queueUrl,
-                messages: messages.map(msg => ({
-                    messageId: msg.messageId,
-                    receiptHandle: msg.receiptHandle
-                }))
-            })
-        });
-        
-        console.debug(`🗑️ ${messages.length} mensagem(ns) deletada(s) da fila`);
-    } catch (error) {
-        console.debug('Erro ao deletar mensagens:', error.message);
-    }
+    }, 5000);
 }
 
 // Sistema de Toast Notifications
