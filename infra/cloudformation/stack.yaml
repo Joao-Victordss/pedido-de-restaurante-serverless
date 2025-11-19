@@ -1,0 +1,615 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Stack completo - Sistema de Pedidos Serverless'
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - staging
+      - prod
+    Description: Ambiente de deploy
+
+Resources:
+  # ===========================================
+  # DynamoDB - Tabela de Pedidos
+  # ===========================================
+  PedidosTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: Pedidos
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+      Tags:
+        - Key: Project
+          Value: RestaurantePedidos
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ===========================================
+  # SQS - Fila de Pedidos
+  # ===========================================
+  PedidosQueueDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: pedidos-queue-dlq
+      MessageRetentionPeriod: 1209600  # 14 dias
+      Tags:
+        - Key: Project
+          Value: RestaurantePedidos
+        - Key: Environment
+          Value: !Ref Environment
+
+  PedidosQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: pedidos-queue
+      VisibilityTimeout: 30
+      MessageRetentionPeriod: 345600  # 4 dias
+      ReceiveMessageWaitTimeSeconds: 20
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt PedidosQueueDLQ.Arn
+        maxReceiveCount: 3
+      Tags:
+        - Key: Project
+          Value: RestaurantePedidos
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ===========================================
+  # S3 - Bucket para Comprovantes
+  # ===========================================
+  ComprovantesBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: pedidos-comprovantes
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteOldComprovantes
+            Status: Enabled
+            ExpirationInDays: 90
+            NoncurrentVersionExpirationInDays: 30
+      Tags:
+        - Key: Project
+          Value: RestaurantePedidos
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ===========================================
+  # SNS - Tópico de Notificações
+  # ===========================================
+  PedidosConcluidosTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: PedidosConcluidos
+      DisplayName: Notificacoes de Pedidos Concluidos
+      Tags:
+        - Key: Project
+          Value: RestaurantePedidos
+        - Key: Environment
+          Value: !Ref Environment
+
+  # Subscrição Email
+  EmailSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      Protocol: email
+      TopicArn: !Ref PedidosConcluidosTopic
+      Endpoint: cozinha@restaurante.com
+
+  # Subscrição HTTP
+  HttpSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      Protocol: http
+      TopicArn: !Ref PedidosConcluidosTopic
+      Endpoint: http://localhost:3000/webhook/pedidos
+
+  # ===========================================
+  # Fila SQS para Frontend consumir notificações SNS
+  # ===========================================
+  
+  # Fila para frontend consumir atualizações em tempo real (fan-out pattern)
+  NotificacoesFrontendQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: notificacoes-frontend
+      MessageRetentionPeriod: 3600  # 1 hora (notificações são efêmeras)
+      VisibilityTimeout: 30
+      ReceiveMessageWaitTimeSeconds: 20  # Long polling para reduzir custos
+      Tags:
+        - Key: Project
+          Value: RestaurantePedidos
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Purpose
+          Value: Frontend real-time notifications
+
+  # Policy para permitir SNS publicar na fila do frontend
+  NotificacoesFrontendQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref NotificacoesFrontendQueue
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: sns.amazonaws.com
+            Action:
+              - sqs:SendMessage
+            Resource: !GetAtt NotificacoesFrontendQueue.Arn
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !Ref PedidosConcluidosTopic
+
+  # Subscrição SNS → SQS para frontend (fan-out pattern)
+  FrontendSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      Protocol: sqs
+      TopicArn: !Ref PedidosConcluidosTopic
+      Endpoint: !GetAtt NotificacoesFrontendQueue.Arn
+      RawMessageDelivery: false  # Mantém metadata SNS (útil para debug)
+
+  # ===========================================
+  # IAM Roles para Lambdas
+  # ===========================================
+  
+  # Role para Lambda criar-pedido (precisa: DynamoDB write, S3 read, SQS send)
+  CriarPedidoLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: CriarPedidoLambdaRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: CriarPedidoPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                Resource: !GetAtt PedidosTable.Arn
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource: !Sub '${ComprovantesBucket.Arn}/*'
+              - Effect: Allow
+                Action:
+                  - sqs:SendMessage
+                Resource: !GetAtt PedidosQueue.Arn
+      Tags:
+        - Key: Project
+          Value: RestaurantePedidos
+        - Key: Environment
+          Value: !Ref Environment
+
+  # Role para Lambda processar-pedido (precisa: SQS receive/delete, DynamoDB update, SNS publish)
+  ProcessarPedidoLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: ProcessarPedidoLambdaRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: ProcessarPedidoPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                Resource: !GetAtt PedidosQueue.Arn
+              - Effect: Allow
+                Action:
+                  - dynamodb:UpdateItem
+                Resource: !GetAtt PedidosTable.Arn
+              - Effect: Allow
+                Action:
+                  - sns:Publish
+                Resource: !Ref PedidosConcluidosTopic
+      Tags:
+        - Key: Project
+          Value: RestaurantePedidos
+        - Key: Environment
+          Value: !Ref Environment
+
+  # Role para Lambda listar-pedidos (precisa: DynamoDB read)
+  ListarPedidosLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: ListarPedidosLambdaRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: ListarPedidosPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:Scan
+                Resource: !GetAtt PedidosTable.Arn
+      Tags:
+        - Key: Project
+          Value: RestaurantePedidos
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ===========================================
+  # Lambda Functions
+  # ===========================================
+  # NOTA: Para usar código local, precisamos do AWS SAM ou fazer packaging manual.
+  # O CloudFormation puro exige S3 ou ZipFile inline.
+  # Por enquanto, o script deploy.ps1 fará o packaging e upload para S3 (LocalStack).
+  
+  # Lambda: Criar Pedido
+  CriarPedidoLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: criar-pedido
+      Runtime: python3.9
+      Handler: index.handler
+      Role: !GetAtt CriarPedidoLambdaRole.Arn
+      Timeout: 30
+      MemorySize: 256
+      Environment:
+        Variables:
+          DYNAMODB_TABLE: !Ref PedidosTable
+          SQS_QUEUE_URL: !Ref PedidosQueue
+          S3_BUCKET: !Ref ComprovantesBucket
+      Code: 
+        S3Bucket: lambda-deployments
+        S3Key: criar-pedido.zip
+      Tags:
+        - Key: Project
+          Value: RestaurantePedidos
+        - Key: Environment
+          Value: !Ref Environment
+
+  # Lambda: Processar Pedido
+  ProcessarPedidoLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: processar-pedido
+      Runtime: python3.9
+      Handler: index.handler
+      Role: !GetAtt ProcessarPedidoLambdaRole.Arn
+      Timeout: 60
+      MemorySize: 256
+      Environment:
+        Variables:
+          DYNAMODB_TABLE: !Ref PedidosTable
+          SNS_TOPIC_ARN: !Ref PedidosConcluidosTopic
+      Code:
+        S3Bucket: lambda-deployments
+        S3Key: processar-pedido.zip
+      Tags:
+        - Key: Project
+          Value: RestaurantePedidos
+        - Key: Environment
+          Value: !Ref Environment
+
+  # Event Source Mapping: SQS → Lambda processar-pedido
+  ProcessarPedidoEventSourceMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      EventSourceArn: !GetAtt PedidosQueue.Arn
+      FunctionName: !Ref ProcessarPedidoLambda
+      BatchSize: 10
+      Enabled: true
+
+  # Lambda: Listar Pedidos
+  ListarPedidosLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: listar-pedidos
+      Runtime: python3.9
+      Handler: index.handler
+      Role: !GetAtt ListarPedidosLambdaRole.Arn
+      Timeout: 30
+      MemorySize: 256
+      Environment:
+        Variables:
+          DYNAMODB_TABLE: !Ref PedidosTable
+      Code:
+        S3Bucket: lambda-deployments
+        S3Key: listar-pedidos.zip
+      Tags:
+        - Key: Project
+          Value: RestaurantePedidos
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ===========================================
+  # API Gateway REST API
+  # ===========================================
+  
+  # REST API
+  PedidosApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: pedidos-api
+      Description: API REST para sistema de pedidos
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+
+  # Resource /pedidos
+  PedidosResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref PedidosApi
+      ParentId: !GetAtt PedidosApi.RootResourceId
+      PathPart: pedidos
+
+  # Resource /pedidos/{id}
+  PedidoIdResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref PedidosApi
+      ParentId: !Ref PedidosResource
+      PathPart: '{id}'
+
+  # POST /pedidos (criar pedido)
+  CreatePedidoMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref PedidosApi
+      ResourceId: !Ref PedidosResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${CriarPedidoLambda.Arn}/invocations'
+
+  # GET /pedidos (listar pedidos)
+  ListPedidosMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref PedidosApi
+      ResourceId: !Ref PedidosResource
+      HttpMethod: GET
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ListarPedidosLambda.Arn}/invocations'
+
+  # GET /pedidos/{id} (buscar pedido específico)
+  GetPedidoMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref PedidosApi
+      ResourceId: !Ref PedidoIdResource
+      HttpMethod: GET
+      AuthorizationType: NONE
+      RequestParameters:
+        method.request.path.id: true
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ListarPedidosLambda.Arn}/invocations'
+
+  # OPTIONS /pedidos/{id} (CORS)
+  OptionsPedidoIdMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref PedidosApi
+      ResourceId: !Ref PedidoIdResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'GET,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+            ResponseTemplates:
+              application/json: ''
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+
+  # OPTIONS /pedidos (CORS)
+  OptionsPedidosMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref PedidosApi
+      ResourceId: !Ref PedidosResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'GET,POST,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+            ResponseTemplates:
+              application/json: ''
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+
+  # Deployment
+  ApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - CreatePedidoMethod
+      - ListPedidosMethod
+      - GetPedidoMethod
+      - OptionsPedidosMethod
+      - OptionsPedidoIdMethod
+    Properties:
+      RestApiId: !Ref PedidosApi
+      StageName: dev
+  # Lambda Permissions para API Gateway
+  CriarPedidoApiPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref CriarPedidoLambda
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${PedidosApi}/*/*'
+
+  ListarPedidosApiPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref ListarPedidosLambda
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${PedidosApi}/*/*'
+
+# ===========================================
+# Outputs - Valores exportados
+# ===========================================
+Outputs:
+  DynamoDBTableName:
+    Description: Nome da tabela DynamoDB
+    Value: !Ref PedidosTable
+    Export:
+      Name: !Sub '${AWS::StackName}-DynamoDBTable'
+
+  DynamoDBTableArn:
+    Description: ARN da tabela DynamoDB
+    Value: !GetAtt PedidosTable.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-DynamoDBTableArn'
+
+  SQSQueueUrl:
+    Description: URL da fila SQS principal
+    Value: !Ref PedidosQueue
+    Export:
+      Name: !Sub '${AWS::StackName}-SQSQueueUrl'
+
+  SQSQueueArn:
+    Description: ARN da fila SQS principal
+    Value: !GetAtt PedidosQueue.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-SQSQueueArn'
+
+  SQSDLQUrl:
+    Description: URL da Dead Letter Queue
+    Value: !Ref PedidosQueueDLQ
+    Export:
+      Name: !Sub '${AWS::StackName}-SQSDLQUrl'
+
+  S3BucketName:
+    Description: Nome do bucket S3
+    Value: !Ref ComprovantesBucket
+    Export:
+      Name: !Sub '${AWS::StackName}-S3Bucket'
+
+  S3BucketArn:
+    Description: ARN do bucket S3
+    Value: !GetAtt ComprovantesBucket.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-S3BucketArn'
+
+  SNSTopicArn:
+    Description: ARN do tópico SNS
+    Value: !Ref PedidosConcluidosTopic
+    Export:
+      Name: !Sub '${AWS::StackName}-SNSTopicArn'
+
+  SNSTopicName:
+    Description: Nome do tópico SNS
+    Value: !GetAtt PedidosConcluidosTopic.TopicName
+    Export:
+      Name: !Sub '${AWS::StackName}-SNSTopicName'
+
+  NotificacoesFrontendQueueUrl:
+    Description: URL da fila SQS para notificações do frontend
+    Value: !Ref NotificacoesFrontendQueue
+    Export:
+      Name: !Sub '${AWS::StackName}-NotificacoesFrontendQueueUrl'
+
+  NotificacoesFrontendQueueArn:
+    Description: ARN da fila SQS para notificações do frontend
+    Value: !GetAtt NotificacoesFrontendQueue.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-NotificacoesFrontendQueueArn'
+
+  CriarPedidoLambdaArn:
+    Description: ARN da Lambda criar-pedido
+    Value: !GetAtt CriarPedidoLambda.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-CriarPedidoLambdaArn'
+
+  ProcessarPedidoLambdaArn:
+    Description: ARN da Lambda processar-pedido
+    Value: !GetAtt ProcessarPedidoLambda.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-ProcessarPedidoLambdaArn'
+
+  ListarPedidosLambdaArn:
+    Description: ARN da Lambda listar-pedidos
+    Value: !GetAtt ListarPedidosLambda.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-ListarPedidosLambdaArn'
+
+  ApiGatewayId:
+    Description: ID da API Gateway
+    Value: !Ref PedidosApi
+    Export:
+      Name: !Sub '${AWS::StackName}-ApiGatewayId'
+
+  ApiGatewayUrl:
+    Description: URL base da API Gateway
+    Value: !Sub 'http://localhost:4566/restapis/${PedidosApi}/dev/_user_request_'
+    Export:
+      Name: !Sub '${AWS::StackName}-ApiGatewayUrl'
+
+  ApiGatewayEndpoint:
+    Description: Endpoint da API Gateway (formato LocalStack)
+    Value: !Sub 'http://localhost:4566/restapis/${PedidosApi}/dev/_user_request_/pedidos'
+    Export:
+      Name: !Sub '${AWS::StackName}-ApiGatewayEndpoint'

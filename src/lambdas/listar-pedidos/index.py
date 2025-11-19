@@ -102,45 +102,49 @@ def handler(event, context):
             
             # Parâmetros de paginação
             limit = int(query_parameters.get('limit', 50))
-            last_evaluated_key = query_parameters.get('lastKey')
             
             # Parâmetro de filtro por status
             status_filter = query_parameters.get('status')
             
-            # Scan DynamoDB
+            # Scan DynamoDB - pegar TODOS os itens para ordenar corretamente
             scan_params = {
-                'TableName': DYNAMODB_TABLE,
-                'Limit': limit
+                'TableName': DYNAMODB_TABLE
             }
-            
-            if last_evaluated_key:
-                scan_params['ExclusiveStartKey'] = {
-                    'id': {'S': last_evaluated_key}
-                }
             
             if status_filter:
                 scan_params['FilterExpression'] = '#status = :status'
                 scan_params['ExpressionAttributeNames'] = {'#status': 'status'}
                 scan_params['ExpressionAttributeValues'] = {':status': {'S': status_filter}}
             
-            response = dynamodb_client.scan(**scan_params)
+            # Fazer scan completo (pode ter múltiplas páginas)
+            all_items = []
+            while True:
+                response = dynamodb_client.scan(**scan_params)
+                all_items.extend(response.get('Items', []))
+                
+                # Se não tem mais páginas, sair do loop
+                if 'LastEvaluatedKey' not in response:
+                    break
+                    
+                # Configurar para próxima página
+                scan_params['ExclusiveStartKey'] = response['LastEvaluatedKey']
             
             # Parsear itens
-            pedidos = [parse_dynamodb_item(item) for item in response.get('Items', [])]
+            pedidos = [parse_dynamodb_item(item) for item in all_items]
             
             # Ordenar por timestamp (mais recente primeiro)
             pedidos.sort(key=lambda x: x['timestamp'], reverse=True)
             
-            print(f"Encontrados {len(pedidos)} pedidos")
+            # Aplicar limite APÓS ordenar
+            pedidos = pedidos[:limit]
             
-            # Resposta com paginação
+            print(f"Encontrados {len(pedidos)} pedidos (ordenados por timestamp desc)")
+            
+            # Resposta
             result = {
                 'pedidos': pedidos,
                 'count': len(pedidos)
             }
-            
-            if 'LastEvaluatedKey' in response:
-                result['lastKey'] = response['LastEvaluatedKey']['id']['S']
             
             return create_response(200, result)
         
