@@ -93,8 +93,6 @@ class ProxyHandler(SimpleHTTPRequestHandler):
         """Proxy para requisições POST."""
         if self.path.startswith('/api/'):
             self.proxy_request('POST')
-        elif self.path == '/queue/delete':
-            self.delete_queue_messages()
         else:
             self.send_error(404)
     
@@ -306,7 +304,7 @@ class ProxyHandler(SimpleHTTPRequestHandler):
             self.send_error(500, f"Erro ao processar mensagens SNS: {str(e)}")
     
     def get_queue_messages(self):
-        """Busca mensagens da fila SQS notificacoes-frontend."""
+        """Consome mensagens da fila SQS do frontend."""
         try:
             import os
             env = os.environ.copy()
@@ -314,15 +312,12 @@ class ProxyHandler(SimpleHTTPRequestHandler):
             env['AWS_SECRET_ACCESS_KEY'] = 'test'
             env['AWS_DEFAULT_REGION'] = 'us-east-1'
             
-            # Nome da fila
-            queue_name = 'notificacoes-frontend'
-            
-            # Buscar URL da fila
+            # Buscar URL da fila notificacoes-frontend
             result = subprocess.run(
                 [
                     "aws", "--endpoint-url", LOCALSTACK_ENDPOINT,
                     "sqs", "get-queue-url",
-                    "--queue-name", queue_name,
+                    "--queue-name", "notificacoes-frontend",
                     "--region", "us-east-1"
                 ],
                 capture_output=True,
@@ -331,20 +326,23 @@ class ProxyHandler(SimpleHTTPRequestHandler):
                 env=env
             )
             
+            if result.returncode != 0:
+                raise Exception(f"Erro ao buscar URL da fila: {result.stderr}")
+            
             queue_data = json.loads(result.stdout)
             queue_url = queue_data.get('QueueUrl')
             
             if not queue_url:
-                self.send_error(404, f"Fila '{queue_name}' não encontrada")
-                return
+                raise Exception("Fila notificacoes-frontend não encontrada")
             
-            # Buscar mensagens da fila (sem remover)
+            # Receber mensagens da fila (sem deletar)
             result = subprocess.run(
                 [
                     "aws", "--endpoint-url", LOCALSTACK_ENDPOINT,
                     "sqs", "receive-message",
                     "--queue-url", queue_url,
                     "--max-number-of-messages", "10",
+                    "--wait-time-seconds", "0",  # Não esperar para evitar timeout
                     "--region", "us-east-1"
                 ],
                 capture_output=True,
@@ -353,190 +351,105 @@ class ProxyHandler(SimpleHTTPRequestHandler):
                 env=env
             )
             
-            # Verificar se stdout está vazio
-            if not result.stdout or result.stdout.strip() == '':
-                # Nenhuma mensagem na fila
-                self.send_response(200)
-                self.send_header('Content-Type', 'application/json')
-                self.send_header('Access-Control-Allow-Origin', '*')
-                self.end_headers()
-                
-                response_data = {
-                    'messages': [],
-                    'count': 0,
-                    'queueUrl': queue_url,
-                    'info': '0 mensagem(ns) na fila'
-                }
-                
-                self.wfile.write(json.dumps(response_data).encode())
-                return
+            if result.returncode != 0:
+                raise Exception(f"Erro ao receber mensagens: {result.stderr}")
             
-            messages_data = json.loads(result.stdout)
-            raw_messages = messages_data.get('Messages', [])
+            # Verificar se a resposta está vazia
+            if not result.stdout.strip():
+                sqs_data = {}
+            else:
+                sqs_data = json.loads(result.stdout)
+            
+            messages = sqs_data.get('Messages', [])
             
             # Processar mensagens
             processed_messages = []
-            
-            for msg in raw_messages:
-                message_body = msg.get('Body', '')
-                message_id = msg.get('MessageId', '')
-                
-                if not message_body:  # Pular mensagens vazias
-                    continue
-                
+            for msg in messages:
                 try:
-                    # A mensagem do SNS vem como JSON dentro do Body
-                    body_data = json.loads(message_body)
+                    # Parsear corpo da mensagem (que é uma notificação SNS)
+                    body_str = msg.get('Body', '{}')
                     
-                    # Extrair a mensagem real do SNS
-                    sns_message = body_data.get('Message', '')
-                    
-                    # Tentar parsear a mensagem do SNS (que é um JSON stringificado)
+                    # Tentar parsear como JSON
                     try:
-                        message_data = json.loads(sns_message)
-                        
+                        body = json.loads(body_str)
+                    except json.JSONDecodeError:
+                        # Se não for JSON válido, adicionar como raw
                         processed_messages.append({
-                            'messageId': message_id,
-                            'receiptHandle': msg.get('ReceiptHandle', ''),
-                            'timestamp': msg.get('Attributes', {}).get('SentTimestamp', ''),
-                            'data': message_data,
-                            'raw': None
-                        })
-                    except:
-                        # Se não for JSON válido, usar como raw
-                        processed_messages.append({
-                            'messageId': message_id,
-                            'receiptHandle': msg.get('ReceiptHandle', ''),
-                            'timestamp': msg.get('Attributes', {}).get('SentTimestamp', ''),
+                            'messageId': msg.get('MessageId', 'unknown'),
+                            'timestamp': msg.get('Attributes', {}).get('SentTimestamp', 'unknown'),
                             'data': None,
-                            'raw': sns_message
+                            'raw': body_str,
+                            'receiptHandle': msg.get('ReceiptHandle', '')
                         })
-                
-                except Exception as e:
-                    # Se falhar, adicionar mensagem raw
+                        continue
+                    
+                    # Se for notificação SNS, extrair a mensagem interna
+                    if 'Message' in body:
+                        try:
+                            message_data = json.loads(body['Message'])
+                        except (json.JSONDecodeError, TypeError):
+                            message_data = body
+                    else:
+                        message_data = body
+                    
                     processed_messages.append({
-                        'messageId': message_id,
-                        'receiptHandle': msg.get('ReceiptHandle', ''),
-                        'timestamp': msg.get('Attributes', {}).get('SentTimestamp', ''),
+                        'messageId': msg.get('MessageId', 'unknown'),
+                        'timestamp': msg.get('Attributes', {}).get('SentTimestamp', 'unknown'),
+                        'data': message_data,
+                        'receiptHandle': msg.get('ReceiptHandle', '')
+                    })
+                except Exception as e:
+                    # Se não conseguir parsear, adicionar mensagem raw com erro
+                    processed_messages.append({
+                        'messageId': msg.get('MessageId', 'unknown'),
+                        'timestamp': msg.get('Attributes', {}).get('SentTimestamp', 'unknown'),
                         'data': None,
-                        'raw': message_body
+                        'raw': str(msg),
+                        'error': str(e),
+                        'receiptHandle': msg.get('ReceiptHandle', '')
                     })
             
-            # Responder com mensagens
+            # Enviar resposta
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
             self.send_header('Access-Control-Allow-Origin', '*')
             self.end_headers()
             
             response_data = {
+                'queueUrl': queue_url,
                 'messages': processed_messages,
                 'count': len(processed_messages),
-                'queueUrl': queue_url,
-                'info': f'{len(processed_messages)} mensagem(ns) na fila'
+                'info': f'{len(processed_messages)} mensagem(s) na fila (últimas 10)'
             }
             
             self.wfile.write(json.dumps(response_data, indent=2).encode())
             
         except subprocess.CalledProcessError as e:
-            error_msg = e.stderr if e.stderr else str(e)
-            
-            # Verificar se é erro de fila não encontrada
-            if 'NonExistentQueue' in error_msg or 'AWS.SimpleQueueService.NonExistentQueue' in error_msg:
-                self.send_response(200)
-                self.send_header('Content-Type', 'application/json')
-                self.send_header('Access-Control-Allow-Origin', '*')
-                self.end_headers()
-                
-                response_data = {
-                    'messages': [],
-                    'count': 0,
-                    'queueUrl': None,
-                    'info': f'Fila "{queue_name}" não existe. Execute o script de criação da fila.',
-                    'error': 'Queue not found'
-                }
-                
-                self.wfile.write(json.dumps(response_data, indent=2).encode())
-            else:
-                self.send_error(500, f"Erro ao buscar mensagens da fila: {error_msg}")
-        except ConnectionAbortedError:
-            # Cliente cancelou a requisição (AbortController do frontend) - comportamento esperado
-            print("🔔 GET /queue/messages HTTP/1.1 - 200 (aborted by client)")
-            pass
-        except Exception as e:
-            # Tentar enviar erro, mas ignorar se conexão já foi fechada
-            try:
-                self.send_error(500, f"Erro ao processar mensagens da fila: {str(e)}")
-            except ConnectionAbortedError:
-                print("🔔 GET /queue/messages HTTP/1.1 - 500 (aborted by client)")
-                pass
-    
-    def delete_queue_messages(self):
-        """Deleta mensagens processadas da fila SQS."""
-        try:
-            import os
-            env = os.environ.copy()
-            env['AWS_ACCESS_KEY_ID'] = 'test'
-            env['AWS_SECRET_ACCESS_KEY'] = 'test'
-            env['AWS_DEFAULT_REGION'] = 'us-east-1'
-            
-            # Ler dados do body
-            content_length = int(self.headers.get('Content-Length', 0))
-            body = self.rfile.read(content_length)
-            data = json.loads(body.decode())
-            
-            queue_url = data.get('queueUrl')
-            messages = data.get('messages', [])
-            
-            if not queue_url or not messages:
-                self.send_error(400, "queueUrl e messages são obrigatórios")
-                return
-            
-            deleted_count = 0
-            failed_count = 0
-            
-            # Deletar cada mensagem individualmente
-            for msg in messages:
-                receipt_handle = msg.get('receiptHandle')
-                
-                if not receipt_handle:
-                    failed_count += 1
-                    continue
-                
-                try:
-                    result = subprocess.run(
-                        [
-                            "aws", "--endpoint-url", LOCALSTACK_ENDPOINT,
-                            "sqs", "delete-message",
-                            "--queue-url", queue_url,
-                            "--receipt-handle", receipt_handle,
-                            "--region", "us-east-1"
-                        ],
-                        capture_output=True,
-                        text=True,
-                        check=True,
-                        env=env
-                    )
-                    deleted_count += 1
-                except subprocess.CalledProcessError:
-                    failed_count += 1
-            
-            # Responder com resultado
-            self.send_response(200)
+            # Retornar erro detalhado em JSON
+            self.send_response(500)
             self.send_header('Content-Type', 'application/json')
             self.send_header('Access-Control-Allow-Origin', '*')
             self.end_headers()
-            
-            response_data = {
-                'success': True,
-                'deleted': deleted_count,
-                'failed': failed_count,
-                'total': len(messages)
+            error_response = {
+                'error': 'Erro ao buscar mensagens da fila',
+                'details': e.stderr if e.stderr else str(e),
+                'messages': [],
+                'count': 0
             }
-            
-            self.wfile.write(json.dumps(response_data).encode())
-            
+            self.wfile.write(json.dumps(error_response, indent=2).encode())
         except Exception as e:
-            self.send_error(500, f"Erro ao deletar mensagens: {str(e)}")
+            # Retornar erro detalhado em JSON
+            self.send_response(500)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            error_response = {
+                'error': 'Erro ao processar mensagens',
+                'details': str(e),
+                'messages': [],
+                'count': 0
+            }
+            self.wfile.write(json.dumps(error_response, indent=2).encode())
     
     def log_message(self, format, *args):
         """Log customizado."""
@@ -547,9 +460,7 @@ class ProxyHandler(SimpleHTTPRequestHandler):
         elif self.path == '/sns/published':
             print(f"📬 {args[0]} - {args[1]}")
         elif self.path == '/queue/messages':
-            print(f"🔔 {args[0]} - {args[1]}")
-        elif self.path == '/queue/delete':
-            print(f"🗑️ {args[0]} - {args[1]}")
+            print(f"📥 {args[0]} - {args[1]}")
         else:
             print(f"📄 {args[0]} - {args[1]}")
 
