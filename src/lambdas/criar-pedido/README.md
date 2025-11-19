@@ -26,13 +26,16 @@ Função Lambda responsável por criar novos pedidos no sistema.
 | `DYNAMODB_TABLE` | Nome da tabela DynamoDB | `Pedidos` |
 | `SQS_QUEUE_URL` | URL da fila SQS | `http://localhost:4566/000000000000/pedidos-queue` |
 
-## 📥 Payload de Entrada
+## 📥 Payload de Entrada (POST /pedidos)
 
 ```json
 {
-  "cliente": "João Silva",
-  "itens": ["Pizza Margherita", "Refrigerante"],
-  "mesa": 5
+   "cliente": "João Silva",
+   "mesa": 5,
+   "itens": [
+      { "nome": "Pizza Margherita", "quantidade": 1, "preco": 30.0 }
+   ],
+   "total": 30.0
 }
 ```
 
@@ -83,28 +86,7 @@ $event | Out-File -FilePath event.json -Encoding utf8
 python -c "import index, json; print(json.dumps(index.handler(json.load(open('event.json')), None), indent=2))"
 ```
 
-### 3. Testar via AWS CLI (LocalStack)
-
-```powershell
-# Deploy da Lambda (próximo passo)
-# Criar arquivo de teste
-@{
-    cliente = "João Silva"
-    itens = @("Pizza Margherita", "Refrigerante")
-    mesa = 5
-} | ConvertTo-Json | Out-File -FilePath test-payload.json -Encoding utf8
-
-# Invocar Lambda
-aws --endpoint-url=http://localhost:4566 `
-  lambda invoke `
-  --function-name criar-pedido `
-  --payload fileb://test-payload.json `
-  --region us-east-1 `
-  response.json
-
-# Ver resposta
-Get-Content response.json | ConvertFrom-Json
-```
+> Observação: em desenvolvimento local via CloudFormation/LocalStack, a forma mais simples de testar é usar `make test-api` ou o frontend (via `frontend/proxy.py`), que já monta o payload neste formato.
 
 ## 📊 Fluxo de Execução
 

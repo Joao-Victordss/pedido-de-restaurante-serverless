@@ -6,14 +6,17 @@ Este diretório contém as funções Lambda do sistema.
 
 ```
 src/lambdas/
-├── criar-pedido/          # Lambda de criação de pedidos
+├── criar-pedido/          # Lambda de criação de pedidos (POST /pedidos)
 │   ├── index.py
-│   ├── requirements.txt
-│   └── README.md
-└── processar-pedido/      # Lambda de processamento de pedidos
-    ├── index.py
-    ├── requirements.txt
-    └── README.md
+│   ├── README.md
+│   └── requirements.txt   # se necessário
+├── processar-pedido/      # Lambda de processamento assíncrono (SQS → PDF → S3 → SNS)
+│   ├── index.py
+│   ├── README.md
+│   └── requirements.txt   # fpdf2 e outras libs de PDF
+└── listar-pedidos/        # Lambda de listagem de pedidos (GET /pedidos)
+  ├── index.py
+  └── README.md
 ```
 
 ## Lambdas
@@ -28,12 +31,21 @@ src/lambdas/
 - Envia mensagem para SQS
 - Retorna resposta HTTP
 
-**Ambiente:**
-- `DYNAMODB_TABLE`: Nome da tabela DynamoDB
-- `SQS_QUEUE_URL`: URL da fila SQS
+**Ambiente (CloudFormation / LocalStack):**
+- `DYNAMODB_TABLE`: Nome da tabela DynamoDB (`Pedidos`)
+- `SQS_QUEUE_URL`: URL da fila SQS principal (`pedidos-queue`)
 
-**Dependências:**
-- boto3
+**Payload esperado (corpo HTTP POST /pedidos):**
+```json
+{
+  "cliente": "João Silva",
+  "mesa": 5,
+  "itens": [
+    { "nome": "Pizza", "quantidade": 1, "preco": 30.0 }
+  ],
+  "total": 30.0
+}
+```
 
 ---
 
@@ -48,152 +60,58 @@ src/lambdas/
 - Atualiza status no DynamoDB
 - Publica notificação no SNS
 
-**Ambiente:**
-- `DYNAMODB_TABLE`: Nome da tabela DynamoDB
-- `S3_BUCKET`: Nome do bucket S3
-- `SNS_TOPIC_ARN`: ARN do tópico SNS
+**Ambiente (CloudFormation / LocalStack):**
+- `DYNAMODB_TABLE`: Nome da tabela DynamoDB (`Pedidos`)
+- `S3_BUCKET`: Nome do bucket S3 de comprovantes (`pedidos-comprovantes`)
+- `SNS_TOPIC_ARN`: ARN do tópico SNS (`PedidosConcluidos`)
 
 **Dependências:**
-- boto3
-- reportlab (geração de PDF)
+- `boto3` (já presente no runtime da Lambda)
+- `fpdf2` (definida em `processar-pedido/requirements.txt`)
 
-## Deploy Local (LocalStack)
+---
 
-### 1. Criar pacote da Lambda
+### 3. listar-pedidos
 
-```powershell
-# Criar diretório de build
-cd src/lambdas/criar-pedido
-mkdir build
-pip install -r requirements.txt -t build/
-cp index.py build/
+**Trigger:** API Gateway (GET /pedidos)
 
-# Criar ZIP
-cd build
-Compress-Archive -Path * -DestinationPath ../criar-pedido.zip
-```
+**Função:**
+- Lê pedidos da tabela DynamoDB `Pedidos`
+- Permite filtro por `status`
+- Implementa paginação via `limit` e `lastKey`
+- Retorna JSON com lista de pedidos e metadados de paginação
 
-### 2. Criar função Lambda
+**Ambiente:**
+- `DYNAMODB_TABLE`: Nome da tabela DynamoDB (`Pedidos`)
 
-```powershell
-aws --endpoint-url=http://localhost:4566 `
-  lambda create-function `
-  --function-name criar-pedido `
-  --runtime python3.11 `
-  --role arn:aws:iam::000000000000:role/lambda-role `
-  --handler index.handler `
-  --zip-file fileb://criar-pedido.zip `
-  --region us-east-1 `
-  --environment Variables="{DYNAMODB_TABLE=Pedidos,SQS_QUEUE_URL=http://localhost:4566/000000000000/pedidos-queue}"
-```
-
-### 3. Testar Lambda
-
-```powershell
-# Criar evento de teste
-$event = @{
-  body = '{"cliente":"João Silva","itens":["Pizza"],"mesa":5}'
-} | ConvertTo-Json
-
-# Invocar Lambda
-aws --endpoint-url=http://localhost:4566 `
-  lambda invoke `
-  --function-name criar-pedido `
-  --payload $event `
-  response.json `
-  --region us-east-1
-
-# Ver resposta
-Get-Content response.json | ConvertFrom-Json
-```
-
-## Deploy Produção (AWS)
-
-### 1. Criar role IAM
-
-```bash
-aws iam create-role \
-  --role-name lambda-pedidos-role \
-  --assume-role-policy-document file://trust-policy.json
-
-aws iam attach-role-policy \
-  --role-name lambda-pedidos-role \
-  --policy-arn arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
-```
-
-### 2. Criar políticas customizadas
-
+**Exemplo de resposta:**
 ```json
 {
-  "Version": "2012-10-17",
-  "Statement": [
+  "pedidos": [
     {
-      "Effect": "Allow",
-      "Action": [
-        "dynamodb:PutItem",
-        "dynamodb:GetItem",
-        "dynamodb:UpdateItem",
-        "dynamodb:Scan"
-      ],
-      "Resource": "arn:aws:dynamodb:us-east-1:*:table/Pedidos"
-    },
-    {
-      "Effect": "Allow",
-      "Action": [
-        "sqs:SendMessage",
-        "sqs:ReceiveMessage",
-        "sqs:DeleteMessage"
-      ],
-      "Resource": "arn:aws:sqs:us-east-1:*:pedidos-queue"
-    },
-    {
-      "Effect": "Allow",
-      "Action": [
-        "s3:PutObject",
-        "s3:GetObject"
-      ],
-      "Resource": "arn:aws:s3:::pedidos-comprovantes/*"
-    },
-    {
-      "Effect": "Allow",
-      "Action": "sns:Publish",
-      "Resource": "arn:aws:sns:us-east-1:*:PedidosConcluidos"
+      "id": "pedido-20251111120000",
+      "cliente": "João Silva",
+      "mesa": 5,
+      "status": "processado",
+      "timestamp": "2025-11-11T12:00:00Z"
     }
-  ]
+  ],
+  "count": 1,
+  "lastKey": "pedido-20251111120000"
 }
 ```
 
-### 3. Deploy com AWS SAM
+## Deploy Local (LocalStack)
 
-```yaml
-# template.yaml
-AWSTemplateFormatVersion: '2010-09-09'
-Transform: AWS::Serverless-2016-10-31
-
-Resources:
-  CriarPedidoFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      FunctionName: criar-pedido
-      Handler: index.handler
-      Runtime: python3.11
-      CodeUri: src/lambdas/criar-pedido/
-      Environment:
-        Variables:
-          DYNAMODB_TABLE: Pedidos
-          SQS_QUEUE_URL: !GetAtt PedidosQueue.QueueUrl
-      Events:
-        ApiEvent:
-          Type: Api
-          Properties:
-            Path: /pedidos
-            Method: post
-```
+Hoje o deploy das Lambdas é feito **integrado à stack CloudFormation**, via `infra/cloudformation/deploy.ps1`, acionado por:
 
 ```bash
-sam build
-sam deploy --guided
+make deploy
 ```
+
+CloudFormation empacota o código, faz upload para o bucket de deployments e atualiza as três funções (`criar-pedido`, `processar-pedido`, `listar-pedidos`).
+
+Para detalhes do processo de deploy, ver `infra/cloudformation/README.md` e `docs/setup.md`.
 
 ## Logs e Monitoramento
 
@@ -207,38 +125,6 @@ aws --endpoint-url=http://localhost:4566 `
   --follow
 ```
 
-### AWS
+### AWS real
 
-```bash
-# CloudWatch Logs
-aws logs tail /aws/lambda/criar-pedido --follow
-
-# Métricas
-aws cloudwatch get-metric-statistics \
-  --namespace AWS/Lambda \
-  --metric-name Invocations \
-  --dimensions Name=FunctionName,Value=criar-pedido \
-  --start-time 2025-01-01T00:00:00Z \
-  --end-time 2025-01-02T00:00:00Z \
-  --period 3600 \
-  --statistics Sum
-```
-
-## Testes
-
-```bash
-# Testes unitários
-cd src/lambdas/criar-pedido
-pytest tests/unit/
-
-# Testes de integração
-pytest tests/integration/
-```
-
-## Próximos Passos
-
-1. ⏳ Implementar `criar-pedido/index.py`
-2. ⏳ Implementar `processar-pedido/index.py`
-3. ⏳ Criar testes unitários
-4. ⏳ Criar testes de integração
-5. ⏳ Configurar CI/CD
+Esta base é focada em **desenvolvimento local com LocalStack**. Para deploy em conta AWS real, recomenda-se criar um template específico (CloudFormation/SAM/Terraform) reaproveitando o código das Lambdas, mas isso está **fora do escopo atual** do repositório.

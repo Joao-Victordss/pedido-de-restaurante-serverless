@@ -2,10 +2,12 @@
 
 Documentação dos endpoints da API REST.
 
-## Base URL
+## Base URL (LocalStack)
+
+No ambiente local com LocalStack e a stack CloudFormation deste projeto, a API REST é criada com o nome `pedidos-api` e stage `dev`.
 
 ```
-http://localhost:4566/restapis/{api-id}/local/_user_request_
+http://localhost:4566/restapis/{API_ID}/dev/_user_request_
 ```
 
 ## Endpoints
@@ -16,12 +18,15 @@ Cria um novo pedido no sistema.
 
 **Endpoint:** `POST /pedidos`
 
-**Request Body:**
+**Request Body (modelo atual):**
 ```json
 {
   "cliente": "João Silva",
-  "itens": ["Pizza Margherita", "Refrigerante"],
-  "mesa": 5
+  "mesa": 5,
+  "itens": [
+    { "nome": "Pizza Margherita", "quantidade": 1, "preco": 30.0 }
+  ],
+  "total": 30.0
 }
 ```
 
@@ -35,10 +40,11 @@ Cria um novo pedido no sistema.
 }
 ```
 
-**Validações:**
+**Validações (Lambda criar-pedido):**
 - `cliente`: string, obrigatório, mínimo 3 caracteres
-- `itens`: array, obrigatório, mínimo 1 item
 - `mesa`: number, obrigatório, maior que 0
+- `itens`: array de objetos, obrigatório, mínimo 1 item, cada item com `nome`, `quantidade`, `preco`
+- `total`: number, obrigatório, soma aproximada dos itens
 
 **Erros:**
 - `400 Bad Request`: Dados inválidos
@@ -46,39 +52,16 @@ Cria um novo pedido no sistema.
 
 ---
 
-### 2. Consultar Pedido
+### 2. Listar Pedidos
 
-Consulta um pedido específico por ID.
-
-**Endpoint:** `GET /pedidos/{pedidoId}`
-
-**Response:** `200 OK`
-```json
-{
-  "id": "pedido-20251111120000",
-  "cliente": "João Silva",
-  "itens": ["Pizza Margherita", "Refrigerante"],
-  "mesa": 5,
-  "status": "em_preparo",
-  "timestamp": "2025-11-11T12:00:00Z"
-}
-```
-
-**Erros:**
-- `404 Not Found`: Pedido não encontrado
-- `500 Internal Server Error`: Erro no servidor
-
----
-
-### 3. Listar Pedidos
-
-Lista todos os pedidos.
+Lista pedidos com paginação e filtro de status.
 
 **Endpoint:** `GET /pedidos`
 
 **Query Parameters:**
-- `status` (optional): Filtrar por status (pendente, em_preparo, pronto, entregue, cancelado)
-- `mesa` (optional): Filtrar por mesa
+- `status` (opcional): Filtrar por status (`pendente`, `processado`, `erro`)
+- `limit` (opcional): Número máximo de resultados (padrão: 50)
+- `lastKey` (opcional): chave para paginação
 
 **Response:** `200 OK`
 ```json
@@ -88,54 +71,21 @@ Lista todos os pedidos.
       "id": "pedido-20251111120000",
       "cliente": "João Silva",
       "mesa": 5,
-      "status": "em_preparo",
-      "timestamp": "2025-11-11T12:00:00Z"
+      "status": "processado",
+      "timestamp": "2025-11-11T12:00:00Z",
+      "itens": [
+        { "nome": "Pizza Margherita", "quantidade": 1, "preco": 30.0 }
+      ],
+      "updated_at": "2025-11-11T12:05:00Z",
+      "comprovante_url": "comprovantes/pedido-20251111120000.pdf"
     }
   ],
-  "count": 1
+  "count": 1,
+  "lastKey": "pedido-20251111120000"
 }
 ```
 
----
-
-### 4. Atualizar Status do Pedido
-
-Atualiza o status de um pedido.
-
-**Endpoint:** `PATCH /pedidos/{pedidoId}/status`
-
-**Request Body:**
-```json
-{
-  "status": "pronto"
-}
-```
-
-**Response:** `200 OK`
-```json
-{
-  "pedidoId": "pedido-20251111120000",
-  "status": "pronto",
-  "message": "Status atualizado com sucesso"
-}
-```
-
-**Status válidos:**
-- `pendente`: Pedido recebido
-- `em_preparo`: Pedido sendo preparado
-- `pronto`: Pedido pronto para entrega
-- `entregue`: Pedido entregue ao cliente
-- `cancelado`: Pedido cancelado
-
----
-
-## Fluxo de Status
-
-```
-pendente → em_preparo → pronto → entregue
-    ↓
-cancelado
-```
+> Observação: a versão atual exposta pela stack CloudFormation implementa somente `GET /pedidos` (listagem). Um endpoint `GET /pedidos/{id}` pode ser adicionado futuramente se necessário.
 
 ## Headers
 
@@ -153,34 +103,25 @@ Content-Type: application/json
 - `404 Not Found`: Recurso não encontrado
 - `500 Internal Server Error`: Erro interno do servidor
 
-## Exemplos com cURL
+## Exemplos com cURL (LocalStack)
 
 ### Criar Pedido
 ```bash
-curl -X POST http://localhost:4566/restapis/{api-id}/local/_user_request_/pedidos \
+curl -X POST http://localhost:4566/restapis/{API_ID}/dev/_user_request_/pedidos \
   -H "Content-Type: application/json" \
   -d '{
     "cliente": "João Silva",
-    "itens": ["Pizza", "Refri"],
-    "mesa": 5
+    "mesa": 5,
+    "itens": [
+      {"nome": "Pizza", "quantidade": 1, "preco": 30.0}
+    ],
+    "total": 30.0
   }'
-```
-
-### Consultar Pedido
-```bash
-curl http://localhost:4566/restapis/{api-id}/local/_user_request_/pedidos/pedido-123
 ```
 
 ### Listar Pedidos
 ```bash
-curl http://localhost:4566/restapis/{api-id}/local/_user_request_/pedidos
-```
-
-### Atualizar Status
-```bash
-curl -X PATCH http://localhost:4566/restapis/{api-id}/local/_user_request_/pedidos/pedido-123/status \
-  -H "Content-Type: application/json" \
-  -d '{"status": "pronto"}'
+curl http://localhost:4566/restapis/{API_ID}/dev/_user_request_/pedidos?status=processado&limit=10
 ```
 
 ## Webhooks (SNS)
@@ -195,8 +136,8 @@ Quando um pedido é concluído, o sistema envia notificações via SNS:
     "pedidoId": "pedido-20251111120000",
     "cliente": "João Silva",
     "mesa": 5,
-    "status": "concluido",
-    "comprovanteUrl": "s3://pedidos-comprovantes/comprovantes/pedido-20251111120000-comprovante.pdf"
+    "status": "processado",
+    "comprovanteUrl": "s3://pedidos-comprovantes/comprovantes/pedido-20251111120000.pdf"
   },
   "Subject": "Pedido Pronto!"
 }
