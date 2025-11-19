@@ -83,6 +83,8 @@ class ProxyHandler(SimpleHTTPRequestHandler):
             self.get_sns_messages()
         elif self.path == '/sns/published':
             self.get_published_sns_messages()
+        elif self.path == '/queue/messages':
+            self.get_queue_messages()
         else:
             # Servir arquivos estáticos (HTML, CSS, JS)
             super().do_GET()
@@ -301,6 +303,154 @@ class ProxyHandler(SimpleHTTPRequestHandler):
         except Exception as e:
             self.send_error(500, f"Erro ao processar mensagens SNS: {str(e)}")
     
+    def get_queue_messages(self):
+        """Consome mensagens da fila SQS do frontend."""
+        try:
+            import os
+            env = os.environ.copy()
+            env['AWS_ACCESS_KEY_ID'] = 'test'
+            env['AWS_SECRET_ACCESS_KEY'] = 'test'
+            env['AWS_DEFAULT_REGION'] = 'us-east-1'
+            
+            # Buscar URL da fila notificacoes-frontend
+            result = subprocess.run(
+                [
+                    "aws", "--endpoint-url", LOCALSTACK_ENDPOINT,
+                    "sqs", "get-queue-url",
+                    "--queue-name", "notificacoes-frontend",
+                    "--region", "us-east-1"
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
+                env=env
+            )
+            
+            if result.returncode != 0:
+                raise Exception(f"Erro ao buscar URL da fila: {result.stderr}")
+            
+            queue_data = json.loads(result.stdout)
+            queue_url = queue_data.get('QueueUrl')
+            
+            if not queue_url:
+                raise Exception("Fila notificacoes-frontend não encontrada")
+            
+            # Receber mensagens da fila (sem deletar)
+            result = subprocess.run(
+                [
+                    "aws", "--endpoint-url", LOCALSTACK_ENDPOINT,
+                    "sqs", "receive-message",
+                    "--queue-url", queue_url,
+                    "--max-number-of-messages", "10",
+                    "--wait-time-seconds", "0",  # Não esperar para evitar timeout
+                    "--region", "us-east-1"
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
+                env=env
+            )
+            
+            if result.returncode != 0:
+                raise Exception(f"Erro ao receber mensagens: {result.stderr}")
+            
+            # Verificar se a resposta está vazia
+            if not result.stdout.strip():
+                sqs_data = {}
+            else:
+                sqs_data = json.loads(result.stdout)
+            
+            messages = sqs_data.get('Messages', [])
+            
+            # Processar mensagens
+            processed_messages = []
+            for msg in messages:
+                try:
+                    # Parsear corpo da mensagem (que é uma notificação SNS)
+                    body_str = msg.get('Body', '{}')
+                    
+                    # Tentar parsear como JSON
+                    try:
+                        body = json.loads(body_str)
+                    except json.JSONDecodeError:
+                        # Se não for JSON válido, adicionar como raw
+                        processed_messages.append({
+                            'messageId': msg.get('MessageId', 'unknown'),
+                            'timestamp': msg.get('Attributes', {}).get('SentTimestamp', 'unknown'),
+                            'data': None,
+                            'raw': body_str,
+                            'receiptHandle': msg.get('ReceiptHandle', '')
+                        })
+                        continue
+                    
+                    # Se for notificação SNS, extrair a mensagem interna
+                    if 'Message' in body:
+                        try:
+                            message_data = json.loads(body['Message'])
+                        except (json.JSONDecodeError, TypeError):
+                            message_data = body
+                    else:
+                        message_data = body
+                    
+                    processed_messages.append({
+                        'messageId': msg.get('MessageId', 'unknown'),
+                        'timestamp': msg.get('Attributes', {}).get('SentTimestamp', 'unknown'),
+                        'data': message_data,
+                        'receiptHandle': msg.get('ReceiptHandle', '')
+                    })
+                except Exception as e:
+                    # Se não conseguir parsear, adicionar mensagem raw com erro
+                    processed_messages.append({
+                        'messageId': msg.get('MessageId', 'unknown'),
+                        'timestamp': msg.get('Attributes', {}).get('SentTimestamp', 'unknown'),
+                        'data': None,
+                        'raw': str(msg),
+                        'error': str(e),
+                        'receiptHandle': msg.get('ReceiptHandle', '')
+                    })
+            
+            # Enviar resposta
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            
+            response_data = {
+                'queueUrl': queue_url,
+                'messages': processed_messages,
+                'count': len(processed_messages),
+                'info': f'{len(processed_messages)} mensagem(s) na fila (últimas 10)'
+            }
+            
+            self.wfile.write(json.dumps(response_data, indent=2).encode())
+            
+        except subprocess.CalledProcessError as e:
+            # Retornar erro detalhado em JSON
+            self.send_response(500)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            error_response = {
+                'error': 'Erro ao buscar mensagens da fila',
+                'details': e.stderr if e.stderr else str(e),
+                'messages': [],
+                'count': 0
+            }
+            self.wfile.write(json.dumps(error_response, indent=2).encode())
+        except Exception as e:
+            # Retornar erro detalhado em JSON
+            self.send_response(500)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            error_response = {
+                'error': 'Erro ao processar mensagens',
+                'details': str(e),
+                'messages': [],
+                'count': 0
+            }
+            self.wfile.write(json.dumps(error_response, indent=2).encode())
+    
     def log_message(self, format, *args):
         """Log customizado."""
         if self.path.startswith('/api/'):
@@ -309,6 +459,8 @@ class ProxyHandler(SimpleHTTPRequestHandler):
             print(f"📧 {args[0]} - {args[1]}")
         elif self.path == '/sns/published':
             print(f"📬 {args[0]} - {args[1]}")
+        elif self.path == '/queue/messages':
+            print(f"📥 {args[0]} - {args[1]}")
         else:
             print(f"📄 {args[0]} - {args[1]}")
 
@@ -340,6 +492,7 @@ def main():
     print(f"   GET  http://localhost:{PORT}/api/pedidos/{{id}}")
     print(f"   GET  http://localhost:{PORT}/sns/messages")
     print(f"   GET  http://localhost:{PORT}/sns/published")
+    print(f"   GET  http://localhost:{PORT}/queue/messages")
     print()
     print("🎨 Frontend disponível em:")
     print(f"   http://localhost:{PORT}/index.html")

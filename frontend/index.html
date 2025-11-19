@@ -59,9 +59,14 @@
         <section class="list-section">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
                 <h2>📋 Pedidos</h2>
-                <button onclick="showSnsInfo()" class="btn btn-secondary btn-sm">
-                    📧 Ver Status SNS
-                </button>
+                <div>
+                    <button onclick="showNotifications()" class="btn btn-primary btn-sm">
+                        🔔 Ver Notificações da Fila
+                    </button>
+                    <button onclick="showSnsInfo()" class="btn btn-secondary btn-sm">
+                        📧 Ver Status SNS
+                    </button>
+                </div>
             </div>
             
             <div class="filters">
@@ -132,11 +137,42 @@
                 <div id="snsMessages"></div>
             </div>
         </div>
+
+        <!-- Modal Notificações da Fila -->
+        <div id="notificationsModal" class="modal">
+            <div class="modal-content">
+                <span class="close" onclick="closeNotificationsModal()">&times;</span>
+                <h2>🔔 Notificações da Fila SQS</h2>
+                
+                <div style="background: #e3f2fd; padding: 1rem; border-radius: 4px; margin-bottom: 1.5rem; border-left: 4px solid #2196f3;">
+                    <p style="margin: 0; font-size: 0.9em;">
+                        <strong>ℹ️ Como funciona:</strong><br>
+                        Esta fila SQS (<code>notificacoes-frontend</code>) está inscrita no tópico SNS <code>PedidosConcluidos</code>. 
+                        Quando um pedido é processado com sucesso, a notificação SNS é automaticamente enviada para esta fila.
+                    </p>
+                </div>
+                
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+                    <h3>📬 Mensagens na Fila</h3>
+                    <div>
+                        <button onclick="toggleQueueAutoRefresh()" class="btn btn-secondary btn-sm" id="queueAutoRefreshBtn">
+                            <span id="queueAutoRefreshIcon">▶️</span> Auto-refresh
+                        </button>
+                        <button onclick="loadQueueMessages()" class="btn btn-primary btn-sm">🔄 Atualizar</button>
+                    </div>
+                </div>
+                
+                <div id="queueMessages"></div>
+            </div>
+        </div>
     </div>
 
     <footer>
         <p>Sistema de Pedidos Serverless | AWS Lambda + API Gateway + LocalStack</p>
     </footer>
+
+    <!-- Container de notificações toast -->
+    <div id="toastContainer"></div>
 
     <script src="script.js"></script>
 </body>

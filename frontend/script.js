@@ -7,6 +7,10 @@ let pageHistory = [];
 let autoRefreshInterval = null;
 let snsAutoRefreshInterval = null;  // Novo: auto-refresh para SNS
 let lastSnsMessageCount = 0;  // Contador para detectar novas mensagens
+let queueAutoRefreshInterval = null;  // Novo: auto-refresh para fila SQS
+let lastQueueMessageCount = 0;  // Contador para detectar novas mensagens na fila
+let queuePollingInterval = null;  // Polling em background para notificações toast
+let knownMessageIds = new Set();  // IDs de mensagens já mostradas
 
 // Inicializar ao carregar
 window.addEventListener('DOMContentLoaded', () => {
@@ -22,6 +26,9 @@ window.addEventListener('DOMContentLoaded', () => {
     
     // Carregar pedidos automaticamente
     setTimeout(() => listOrders(), 500);
+    
+    // Iniciar polling de notificações em background
+    startQueuePolling();
 });
 
 function getApiUrl() {
@@ -362,12 +369,16 @@ function showError(elementId, message) {
 window.onclick = function(event) {
     const detailModal = document.getElementById('detailModal');
     const snsModal = document.getElementById('snsModal');
+    const notificationsModal = document.getElementById('notificationsModal');
     
     if (event.target === detailModal) {
         closeModal();
     }
     if (event.target === snsModal) {
         closeSnsModal();
+    }
+    if (event.target === notificationsModal) {
+        closeNotificationsModal();
     }
 }
 
@@ -593,4 +604,259 @@ function toggleSnsAutoRefresh() {
         // Carregar imediatamente
         loadSnsMessages();
     }
+}
+
+// Mostrar modal de notificações da fila
+async function showNotifications() {
+    document.getElementById('notificationsModal').style.display = 'block';
+    await loadQueueMessages();
+}
+
+function closeNotificationsModal() {
+    document.getElementById('notificationsModal').style.display = 'none';
+    
+    // Parar auto-refresh quando fechar o modal
+    if (queueAutoRefreshInterval) {
+        clearInterval(queueAutoRefreshInterval);
+        queueAutoRefreshInterval = null;
+        
+        const btn = document.getElementById('queueAutoRefreshBtn');
+        const icon = document.getElementById('queueAutoRefreshIcon');
+        if (btn && icon) {
+            btn.classList.remove('active');
+            icon.textContent = '▶️';
+        }
+    }
+}
+
+// Carregar mensagens da fila SQS
+async function loadQueueMessages() {
+    try {
+        const baseUrl = getApiUrl().replace('/api', '');
+        
+        document.getElementById('queueMessages').innerHTML = '<p class="loading">🔄 Buscando mensagens da fila...</p>';
+        
+        const response = await fetch(`${baseUrl}/queue/messages`);
+        const data = await response.json();
+        
+        // Detectar novas mensagens
+        const hasNewMessages = data.count > lastQueueMessageCount && lastQueueMessageCount > 0;
+        lastQueueMessageCount = data.count;
+        
+        let html = '<div style="max-height: 500px; overflow-y: auto;">';
+        
+        // Mostrar notificação de nova mensagem
+        if (hasNewMessages) {
+            html += `
+                <div style="background: #4caf50; color: white; padding: 0.75rem; margin-bottom: 1rem; border-radius: 4px; animation: slideIn 0.3s ease-out;">
+                    <strong>🔔 Nova notificação recebida na fila!</strong>
+                </div>
+            `;
+        }
+        
+        // Informações da fila
+        html += `
+            <div style="background: #f5f5f5; padding: 1rem; border-radius: 4px; margin-bottom: 1rem;">
+                <p style="margin: 0; font-size: 0.9em;">
+                    <strong>📥 Fila:</strong> <code>notificacoes-frontend</code><br>
+                    <strong>📊 Total de mensagens:</strong> ${data.count}<br>
+                    ${data.queueUrl ? `<strong>🔗 URL:</strong> <span style="font-size: 0.8em; word-break: break-all;">${data.queueUrl}</span>` : ''}
+                </p>
+            </div>
+        `;
+        
+        if (data.messages && data.messages.length > 0) {
+            html += `<p style="color: #2196f3; font-size: 0.9em; margin-bottom: 1rem;">✅ ${data.info}</p>`;
+            
+            data.messages.forEach((msg, index) => {
+                // Destacar a primeira mensagem se for nova
+                const isNew = hasNewMessages && index === 0;
+                const bgColor = isNew ? '#bbdefb' : '#e3f2fd';
+                const animation = isNew ? 'style="animation: pulse 1s ease-in-out;"' : '';
+                
+                html += `<div ${animation} style="background: ${bgColor}; padding: 1rem; margin-bottom: 0.75rem; border-radius: 4px; border-left: 3px solid #2196f3;">`;
+                
+                if (msg.data && msg.data.pedidoId) {
+                    // Mensagem estruturada de pedido
+                    html += `
+                        <div style="margin-bottom: 0.5rem;">
+                            <strong>${isNew ? '🆕 ' : ''}🔔 Notificação de Pedido Processado</strong>
+                            <span style="float: right; font-size: 0.85em; color: #666;">
+                                ${msg.timestamp ? new Date(parseInt(msg.timestamp)).toLocaleString('pt-BR') : 'Agora'}
+                            </span>
+                        </div>
+                        
+                        <div style="font-size: 0.9em; background: white; padding: 0.75rem; border-radius: 4px; margin-top: 0.5rem;">
+                            <strong>📦 Pedido ID:</strong> <code>${msg.data.pedidoId}</code><br>
+                            ${msg.data.cliente ? `<strong>👤 Cliente:</strong> ${msg.data.cliente}<br>` : ''}
+                            ${msg.data.mesa ? `<strong>🪑 Mesa:</strong> ${msg.data.mesa}<br>` : ''}
+                            ${msg.data.status ? `<strong>📊 Status:</strong> <span class="badge badge-success">${msg.data.status}</span><br>` : ''}
+                            ${msg.data.comprovante ? `<strong>📄 Comprovante:</strong> <code style="font-size: 0.85em;">${msg.data.comprovante}</code><br>` : ''}
+                            ${msg.data.timestamp ? `<strong>🕐 Processado:</strong> ${formatDate(msg.data.timestamp)}` : ''}
+                        </div>
+                        
+                        <div style="margin-top: 0.5rem; font-size: 0.85em; color: #1976d2;">
+                            <strong>📬 Message ID:</strong> <code style="font-size: 0.8em;">${msg.messageId}</code>
+                        </div>
+                    `;
+                } else {
+                    // Mensagem raw
+                    html += `
+                        <div style="margin-bottom: 0.5rem;">
+                            <strong>📨 Mensagem na Fila</strong>
+                            <span style="float: right; font-size: 0.85em; color: #666;">
+                                ${msg.timestamp ? new Date(parseInt(msg.timestamp)).toLocaleString('pt-BR') : 'Agora'}
+                            </span>
+                        </div>
+                        
+                        <div style="font-size: 0.85em; background: white; padding: 0.75rem; border-radius: 4px; margin-top: 0.5rem; max-height: 100px; overflow-y: auto;">
+                            <pre style="margin: 0; white-space: pre-wrap; word-wrap: break-word;">${msg.raw || JSON.stringify(msg, null, 2)}</pre>
+                        </div>
+                        
+                        <div style="margin-top: 0.5rem; font-size: 0.85em; color: #1976d2;">
+                            <strong>📬 Message ID:</strong> <code style="font-size: 0.8em;">${msg.messageId}</code>
+                        </div>
+                    `;
+                }
+                
+                html += '</div>';
+            });
+        } else {
+            html += `
+                <div style="text-align: center; padding: 3rem; color: #666;">
+                    <p style="font-size: 1.2em;">📭 Fila vazia</p>
+                    <p style="font-size: 0.9em; margin-top: 1rem;">
+                        Crie e processe alguns pedidos para ver notificações aqui!
+                    </p>
+                    <p style="font-size: 0.85em; margin-top: 1rem; color: #999;">
+                        💡 As mensagens aparecem quando um pedido é processado com sucesso.
+                    </p>
+                    ${queueAutoRefreshInterval ? '<p style="font-size: 0.85em; color: #2196f3; margin-top: 1rem;">⏳ Aguardando novas notificações... (atualiza a cada 3s)</p>' : ''}
+                </div>
+            `;
+        }
+        
+        html += '</div>';
+        
+        document.getElementById('queueMessages').innerHTML = html;
+        
+    } catch (error) {
+        document.getElementById('queueMessages').innerHTML = `
+            <div style="text-align: center; padding: 2rem;">
+                <p style="color: var(--danger);">❌ Erro ao buscar mensagens da fila</p>
+                <p style="font-size: 0.9em;">${error.message}</p>
+                <p style="font-size: 0.85em; color: #999; margin-top: 1rem;">
+                    Verifique se:<br>
+                    • Docker está rodando: <code>docker ps</code><br>
+                    • LocalStack está ativo: <code>make logs</code><br>
+                    • Fila existe: <code>make status</code>
+                </p>
+            </div>
+        `;
+    }
+}
+
+// Toggle auto-refresh das mensagens da fila
+function toggleQueueAutoRefresh() {
+    const btn = document.getElementById('queueAutoRefreshBtn');
+    const icon = document.getElementById('queueAutoRefreshIcon');
+    
+    if (queueAutoRefreshInterval) {
+        // Parar auto-refresh
+        clearInterval(queueAutoRefreshInterval);
+        queueAutoRefreshInterval = null;
+        btn.classList.remove('active');
+        icon.textContent = '▶️';
+    } else {
+        // Iniciar auto-refresh a cada 3 segundos
+        queueAutoRefreshInterval = setInterval(() => {
+            loadQueueMessages();
+        }, 3000);
+        btn.classList.add('active');
+        icon.textContent = '⏸️';
+        
+        // Carregar imediatamente
+        loadQueueMessages();
+    }
+}
+
+// Polling em background para notificações toast
+function startQueuePolling() {
+    // Poll a cada 5 segundos
+    queuePollingInterval = setInterval(async () => {
+        try {
+            const baseUrl = getApiUrl().replace('/api', '');
+            const response = await fetch(`${baseUrl}/queue/messages`);
+            const data = await response.json();
+            
+            if (data.messages && data.messages.length > 0) {
+                // Verificar se há mensagens novas
+                data.messages.forEach(msg => {
+                    if (!knownMessageIds.has(msg.messageId)) {
+                        knownMessageIds.add(msg.messageId);
+                        
+                        // Mostrar toast apenas se tiver dados do pedido
+                        if (msg.data && msg.data.pedidoId) {
+                            showToast({
+                                type: 'success',
+                                icon: '🔔',
+                                title: 'Pedido Processado!',
+                                message: `Pedido ${msg.data.pedidoId} foi processado com sucesso${msg.data.cliente ? ' para ' + msg.data.cliente : ''}`,
+                                duration: 8000,
+                                onClick: () => showOrderDetails(msg.data.pedidoId)
+                            });
+                        }
+                    }
+                });
+            }
+        } catch (error) {
+            // Silencioso - não mostrar erro do polling em background
+            console.debug('Queue polling:', error.message);
+        }
+    }, 5000);
+}
+
+// Sistema de Toast Notifications
+function showToast({ type = 'info', icon = 'ℹ️', title, message, duration = 5000, onClick = null }) {
+    const container = document.getElementById('toastContainer');
+    
+    const toast = document.createElement('div');
+    toast.className = `toast ${type}`;
+    
+    if (onClick) {
+        toast.style.cursor = 'pointer';
+        toast.addEventListener('click', (e) => {
+            if (!e.target.classList.contains('toast-close')) {
+                onClick();
+                removeToast(toast);
+            }
+        });
+    }
+    
+    toast.innerHTML = `
+        <div class="toast-icon">${icon}</div>
+        <div class="toast-content">
+            <div class="toast-title">${title}</div>
+            <div class="toast-message">${message}</div>
+        </div>
+        <button class="toast-close" onclick="event.stopPropagation(); this.parentElement.remove()">×</button>
+    `;
+    
+    container.appendChild(toast);
+    
+    // Auto-remover após duração
+    if (duration > 0) {
+        setTimeout(() => removeToast(toast), duration);
+    }
+    
+    return toast;
+}
+
+function removeToast(toast) {
+    toast.classList.add('removing');
+    setTimeout(() => {
+        if (toast.parentElement) {
+            toast.remove();
+        }
+    }, 300);
 }
