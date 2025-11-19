@@ -46,6 +46,10 @@ def get_api_id():
             print(f"❌ API '{API_NAME}' não encontrada no LocalStack")
             return None
         
+        # Se retornar múltiplos IDs (separados por tab ou newline), pegar apenas o primeiro
+        if '\t' in api_id or '\n' in api_id:
+            api_id = api_id.split()[0]
+        
         print(f"✅ API ID encontrado: {api_id}")
         return api_id
         
@@ -100,7 +104,7 @@ class ProxyHandler(SimpleHTTPRequestHandler):
         api_path = self.path[4:]  # Remove '/api'
         
         # Construir URL do API Gateway
-        url = f"{LOCALSTACK_ENDPOINT}/restapis/{self.api_id}/prod/_user_request_{api_path}"
+        url = f"{LOCALSTACK_ENDPOINT}/restapis/{self.api_id}/dev/_user_request_{api_path}"
         
         try:
             # Ler body se for POST
