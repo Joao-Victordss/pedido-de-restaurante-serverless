@@ -108,8 +108,19 @@ function Deploy-Lambda {
             }
             
             $ErrorActionPreference = "Continue"
-            # Instalar todas de uma vez para pegar dependências transitivas
-            pip install -r $tempRequirements -t $tempDir --quiet --no-cache-dir --disable-pip-version-check 2>&1 | Out-Null
+            
+            # Verificar se precisa de Pillow (bibliotecas nativas)
+            $needsLinuxBuild = $requirements | Where-Object { $_ -match 'Pillow' }
+            
+            if ($needsLinuxBuild) {
+                Write-Host "     📦 Detectado Pillow - instalando para manylinux..." -ForegroundColor Cyan
+                # Instalar para plataforma Linux (manylinux) compatível com Lambda
+                pip install -r $tempRequirements -t $tempDir --platform manylinux2014_x86_64 --implementation cp --python-version 39 --only-binary=:all: --upgrade --no-cache-dir 2>&1 | Out-Null
+            } else {
+                # Instalar normalmente (sem bibliotecas nativas)
+                pip install -r $tempRequirements -t $tempDir --quiet --no-cache-dir --disable-pip-version-check 2>&1 | Out-Null
+            }
+            
             $ErrorActionPreference = "Stop"
             
             # Remover arquivo temporário
